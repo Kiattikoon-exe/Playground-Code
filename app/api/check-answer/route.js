@@ -405,7 +405,7 @@ export async function POST(request) {
 
     return NextResponse.json({
       isCorrect: isCorrect,
-      message: isCorrect ? "ถูกต้อง! 🎉" : "ผลลัพธ์ไม่ตรงกับที่คาดหวัง",
+      
       actualOutput: actualOutput,
       expectedOutput: isCorrect ? null : expectedOutputTrimmed,
       challengeId: challengeId,
