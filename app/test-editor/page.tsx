@@ -1,497 +1,552 @@
 'use client';
 import { useState, useEffect } from 'react';
 import CodeEditor from '@/components/CodeEditor';
+import WebEditor from '@/components/WebEditor';
+import { createClient } from '@supabase/supabase-js';
 
 export default function TestEditorPage() {
-  // State สำหรับโหมด Backend (ของเดิม)
-  const [code, setCode] = useState('// เขียนโค้ด JavaScript ของคุณที่นี่\nconsole.log("hello");');
-  const [language, setLanguage] = useState('javascript');
-  const [response, setResponse] = useState(null);
+  // ============ State หลัก ============
+  const [code, setCode] = useState('public class HelloWorld {\n  public static void main(String[] args) {\n    System.out.println("Hello, World!");\n  }\n}');
+  const [language, setLanguage] = useState('java');
+  const [response, setResponse] = useState<any>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [challengeId, setChallengeId] = useState('1');
 
-  // State ใหม่สำหรับโหมด Web Playground
-  const [mode, setMode] = useState('backend'); // 'backend' หรือ 'web'
-  const [htmlCode, setHtmlCode] = useState('<h1>My First Webpage</h1>\n<p>Hello, World!</p>');
-  const [cssCode, setCssCode] = useState('body {\n  font-family: sans-serif;\n  padding: 20px;\n}');
-  const [jsCode, setJsCode] = useState('console.log("Page loaded!");');
-  const [webOutput, setWebOutput] = useState('');
+  // ============ State สำหรับ Web Mode ============
+  const [htmlCode, setHtmlCode] = useState('');
+  const [cssCode, setCssCode] = useState('');
+  const [jsCode, setJsCode] = useState('');
 
-  // ฟังก์ชันสำหรับสร้างและอัปเดตผลลัพธ์ใน iframe
-  const updateWebOutput = () => {
-    const combinedHtml = `
-      <html>
-        <head>
-          <style>${cssCode}</style>
-        </head>
-        <body>
-          ${htmlCode}
-          <script>${jsCode}<\/script>
-        </body>
-      </html>
-    `;
-    setWebOutput(combinedHtml);
+  // ============ State สำหรับ Challenge Data ============
+  const [challengeData, setChallengeData] = useState<any>({
+    title: 'โจทย์',
+    description: 'คำอธิบาย',
+    difficulty: 5,
+    likes: 127,
+    testCases: [],
+    validation_mode: 'output_only',
+    required_keywords: [],
+    forbidden_keywords: []
+  });
+
+  const [currentTestCase, setCurrentTestCase] = useState(1);
+  const [totalTestCases] = useState(10);
+  const [isLoading, setIsLoading] = useState(true);
+
+  // ============ Template โค้ดสำหรับแต่ละภาษา ============
+  const codeTemplates: Record<string, string> = {
+    javascript: '// เขียนโค้ด JavaScript\nconsole.log("Hello, World!");',
+    typescript: '// เขียนโค้ด TypeScript\nconst message: string = "Hello, World!";\nconsole.log(message);',
+    python: '# เขียนโค้ด Python\nprint("Hello, World!")',
+    java: 'public class Main {\n    public static void main(String[] args) {\n        System.out.println("Hello, World!");\n    }\n}',
+    cpp: '#include <iostream>\nusing namespace std;\n\nint main() {\n    cout << "Hello, World!" << endl;\n    return 0;\n}',
+    c: '#include <stdio.h>\n\nint main() {\n    printf("Hello, World!\\n");\n    return 0;\n}',
+    csharp: 'using System;\n\nclass Program {\n    static void Main() {\n        Console.WriteLine("Hello, World!");\n    }\n}',
+    go: 'package main\nimport "fmt"\n\nfunc main() {\n    fmt.Println("Hello, World!")\n}',
+    ruby: '# เขียนโค้ด Ruby\nputs "Hello, World!"',
+    php: '<?php\necho "Hello, World!";\n?>',
+    swift: '// เขียนโค้ด Swift\nprint("Hello, World!")',
+    kotlin: 'fun main() {\n    println("Hello, World!")\n}',
+    rust: 'fn main() {\n    println!("Hello, World!");\n}',
+    sql: '-- เขียนคำสั่ง SQL\nSELECT "Hello, World!";',
+    bash: '#!/bin/bash\necho "Hello, World!"',
+    r: '# เขียนโค้ด R\nprint("Hello, World!")',
+    scala: 'object Main extends App {\n  println("Hello, World!")\n}',
+    perl: '#!/usr/bin/perl\nprint "Hello, World!\\n";',
+    web: '', // ใช้ WebEditor
   };
 
-  // อัปเดตผลลัพธ์ของ Web Playground ทุกครั้งที่โค้ดเปลี่ยน
+  // ============ โหลดข้อมูลจาก Supabase ============
   useEffect(() => {
-    if (mode === 'web') {
-      const timeoutId = setTimeout(() => {
-        updateWebOutput();
-      }, 500);
+    async function loadChallenge() {
+      setIsLoading(true);
+      const supabase = createClient(
+        process.env.NEXT_PUBLIC_SUPABASE_URL!,
+        process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+      );
 
-      const handleMessage = (event) => {
-        if (event.data && event.data.type === 'validation_result') {
-          setResponse(event.data.payload);
-          setIsSubmitting(false);
-        } else if (event.data && event.data.type === 'validation_error') {
-          setResponse({
-            isCorrect: false,
-            message: `เกิดข้อผิดพลาดใน Validation Script: ${event.data.message}`,
-            actualOutput: event.data.message,
-            timestamp: new Date().toISOString(),
-          });
-          setIsSubmitting(false);
+      const { data, error } = await supabase
+        .from('Codecamp')
+        .select('*')
+        .eq('id', challengeId)
+        .single();
+
+      if (data) {
+        setChallengeData({
+          title: data.title || 'โจทย์',
+          description: data.description || 'คำอธิบาย',
+          difficulty: data.difficulty || 5,
+          likes: data.likes || 127,
+          testCases: data.test_cases || [],
+          validation_mode: data.validation_mode || 'output_only',
+          required_keywords: data.required_keywords || [],
+          forbidden_keywords: data.forbidden_keywords || []
+        });
+
+        // ตั้งค่าภาษาตามโจทย์
+        const challengeLang = data.language || 'java';
+        setLanguage(challengeLang);
+
+        // ตั้งค่าโค้ดเริ่มต้น
+        if (challengeLang === 'web') {
+          setHtmlCode(data.initial_html || '<div id="app">\n  <h1>เริ่มเขียนโค้ดที่นี่</h1>\n</div>');
+          setCssCode(data.initial_css || '#app {\n  padding: 20px;\n  font-family: Arial;\n}');
+          setJsCode(data.initial_js || '// JavaScript Code\nconsole.log("Ready!");');
+        } else {
+          setCode(data.initial_code || codeTemplates[challengeLang] || '');
         }
-      };
-      window.addEventListener('message', handleMessage);
+      } else if (error) {
+        console.error('Error loading challenge:', error);
+      }
 
-      return () => {
-        clearTimeout(timeoutId);
-        window.removeEventListener('message', handleMessage);
-      };
+      setIsLoading(false);
     }
-  }, [mode, htmlCode, cssCode, jsCode]);
 
+    loadChallenge();
+  }, [challengeId]);
+
+  // ============ ฟังก์ชัน Submit ============
   const handleSubmit = async () => {
     setIsSubmitting(true);
     setResponse(null);
 
-    console.log('=== ข้อมูลที่จะส่งไป Backend ===');
-    console.log('Challenge ID:', challengeId);
-    console.log('Mode:', mode);
-
-    let payload = {
-      challengeId: challengeId,
-      language: mode === 'web' ? 'web' : language,
-    };
-
-    if (mode === 'web') {
-      // แก้ไข: ส่งโค้ดทั้งหมดไปให้ Backend
-      payload = { 
-        ...payload, 
-        htmlCode, 
-        cssCode, 
-        jsCode,
-        answer: `HTML:\n${htmlCode}\n\nCSS:\n${cssCode}\n\nJS:\n${jsCode}` // เพิ่ม answer เพื่อให้บันทึกใน DB
-      };
-      console.log('HTML Code:', htmlCode);
-      console.log('CSS Code:', cssCode);
-      console.log('JS Code:', jsCode);
-    } else {
-      payload = { ...payload, answer: code };
-      console.log('User Code:', code);
-    }
-
-    console.log('Payload:', JSON.stringify(payload, null, 2));
-    console.log('================================\n');
-
     try {
+      const payload = language === 'web'
+        ? { challengeId, language: 'web', htmlCode, cssCode, jsCode }
+        : { challengeId, answer: code, language };
+
       const res = await fetch('/api/check-answer', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       });
 
       const data = await res.json();
-
-      // ถ้าเป็นโจทย์เว็บ ให้รอผลจาก iframe ผ่าน postMessage
-      if (data.type === 'web_validation') {
-        console.log('=== Web Validation Mode: Waiting for result from iframe... ===');
-        let validationFrame = document.getElementById('validation-frame') as HTMLIFrameElement;
-        if (!validationFrame) {
-          validationFrame = document.createElement('iframe');
-          validationFrame.id = 'validation-frame';
-          validationFrame.style.display = 'none';
-          document.body.appendChild(validationFrame);
-        }
-        
-        validationFrame.srcdoc = data.html;
-      } else {
-        // โหมดปกติ แสดงผลทันที
-        setResponse(data);
-        setIsSubmitting(false);
-      }
-
+      setResponse(data);
     } catch (error) {
       console.error('Error:', error);
       setResponse({
         isCorrect: false,
-        message: 'เกิดข้อผิดพลาดในการส่งคำตอบ: ' + error.message,
-        timestamp: new Date().toISOString(),
+        message: 'เกิดข้อผิดพลาดในการส่งคำตอบ',
       });
+    } finally {
       setIsSubmitting(false);
     }
   };
 
-  // ตัวอย่างโค้ดสำหรับแต่ละภาษา
-  const codeTemplates = {
-    javascript: '// เขียนโค้ด JavaScript ของคุณที่นี่\nconsole.log("hello");',
-    python: '# เขียนโค้ด Python ของคุณที่นี่\nprint("hello")',
-    java: 'public class Main {\n  public static void main(String[] args) {\n    // เขียนโค้ด Java ของคุณที่นี่\n    System.out.println("hello");\n  }\n}',
-    cpp: '#include <iostream>\nusing namespace std;\n\nint main() {\n  // เขียนโค้ด C++ ของคุณที่นี่\n  cout << "hello" << endl;\n  return 0;\n}',
+  // ============ ฟังก์ชัน Reboot ============
+  const handleReboot = () => {
+    if (language === 'web') {
+      setHtmlCode('<div id="app">\n  <h1>Hello World</h1>\n</div>');
+      setCssCode('#app { padding: 20px; }');
+      setJsCode('console.log("Hello");');
+    } else if (codeTemplates[language]) {
+      setCode(codeTemplates[language]);
+    }
+    setResponse(null);
   };
 
-  const moreCodeTemplates = {
-    c: '#include <stdio.h>\n\nint main() {\n  // เขียนโค้ด C ของคุณที่นี่\n  printf("hello");\n  return 0;\n}',
-    csharp: 'using System;\n\nclass Program {\n  static void Main() {\n    // เขียนโค้ด C# ของคุณที่นี่\n    Console.WriteLine("hello");\n  }\n}',
-    go: 'package main\nimport "fmt"\n\nfunc main() {\n  // เขียนโค้ด Go ของคุณที่นี่\n  fmt.Println("hello")\n}',
-    ruby: '# เขียนโค้ด Ruby ของคุณที่นี่\nputs "hello"',
-    php: '<?php\n// เขียนโค้ด PHP ของคุณที่นี่\necho "hello";\n?>',
-    swift: '// เขียนโค้ด Swift ของคุณที่นี่\nprint("hello")',
-    kotlin: 'fun main() {\n  // เขียนโค้ด Kotlin ของคุณที่นี่\n  println("hello")\n}',
-    rust: 'fn main() {\n  // เขียนโค้ด Rust ของคุณที่นี่\n  println!("hello");\n}',
-    typescript: '// เขียนโค้ด TypeScript ของคุณที่นี่\nconsole.log("hello");',
-    sql: '/* เขียนคำสั่ง SQL ของคุณที่นี่ */\nSELECT "hello";',
-    bash: '# เขียนสคริปต์ Bash ของคุณที่นี่\necho "hello"',
-  };
-
-  const allCodeTemplates = { ...codeTemplates, ...moreCodeTemplates };
-
-  const handleLanguageChange = (newLanguage) => {
-    setLanguage(newLanguage);
-    if (allCodeTemplates[newLanguage]) {
-      setCode(allCodeTemplates[newLanguage]);
+  // ============ ฟังก์ชัน Next ============
+  const handleNext = () => {
+    if (currentTestCase < totalTestCases) {
+      setCurrentTestCase(prev => prev + 1);
+      setChallengeId(String(parseInt(challengeId) + 1));
+      setResponse(null);
     }
   };
 
+  // ============ ฟังก์ชันเปลี่ยนภาษา ============
+  const handleLanguageChange = (newLanguage: string) => {
+    setLanguage(newLanguage);
+    if (newLanguage === 'web') {
+      setHtmlCode('<div id="app">\n  <h1>Hello World</h1>\n</div>');
+      setCssCode('#app { padding: 20px; }');
+      setJsCode('console.log("Hello");');
+    } else if (codeTemplates[newLanguage]) {
+      setCode(codeTemplates[newLanguage]);
+    }
+    setResponse(null);
+  };
+
+  // ============ UI ============
   return (
-    <div className="min-h-screen bg-gray-100 p-8">
-      <div className="max-w-7xl mx-auto">
-        <h1 className="text-3xl font-bold mb-6">🧪 Code Editor - Compile & Run</h1>
-
-        {/* ตัวสลับโหมด */}
-        <div className="mb-6 flex justify-center bg-gray-200 rounded-lg p-1">
-          <button
-            onClick={() => {
-              setMode('backend');
-              setResponse(null);
-            }}
-            className={`px-6 py-2 rounded-md font-semibold w-1/2 ${mode === 'backend' ? 'bg-white shadow' : 'text-gray-600'}`}
-          >
-            โหมด Backend (Python, Java, etc.)
-          </button>
-          <button
-            onClick={() => {
-              setMode('web');
-              setResponse(null);
-            }}
-            className={`px-6 py-2 rounded-md font-semibold w-1/2 ${mode === 'web' ? 'bg-white shadow' : 'text-gray-600'}`}
-          >
-            โหมด Web Playground (HTML/CSS/JS)
-          </button>
-        </div>
-
-        {/* ส่วนเลือก Challenge ID */}
-        <div className="mb-6 bg-white rounded-lg shadow p-4">
-          <div className="flex items-center gap-4 max-w-md mx-auto">
-            <label className="font-semibold w-32 text-lg">โจทย์ข้อที่:</label>
-            <input
-              type="text"
-              value={challengeId}
-              onChange={(e) => setChallengeId(e.target.value)}
-              className="border rounded px-4 py-2 flex-1 text-lg"
-              placeholder="ใส่ ID โจทย์"
-            />
+    <div className="min-h-screen bg-gray-50">
+      {/* Header */}
+      <header className="bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between shadow-sm">
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 bg-gradient-to-br from-teal-500 to-teal-700 rounded-lg flex items-center justify-center shadow-md">
+            <svg className="w-6 h-6 text-white" fill="currentColor" viewBox="0 0 20 20">
+              <path d="M9 4.804A7.968 7.968 0 005.5 4c-1.255 0-2.443.29-3.5.804v10A7.969 7.969 0 015.5 14c1.669 0 3.218.51 4.5 1.385A7.962 7.962 0 0114.5 14c1.255 0 2.443.29 3.5.804v-10A7.968 7.968 0 0014.5 4c-1.255 0-2.443.29-3.5.804V12a1 1 0 11-2 0V4.804z" />
+            </svg>
           </div>
+          <h1 className="text-xl font-bold bg-gradient-to-r from-teal-900 to-teal-500 bg-clip-text text-transparent">Sprouting Tech Code Camp</h1>
+
+
+        </div>
+        <nav className="flex-1 flex justify-center">
+          <div className="p-0.5 bg-gradient-to-r from-teal-900 to-teal-500 rounded-full shadow-sm">
+            <div className="flex items-center gap-8 px-8 py-2 bg-white rounded-full">
+              <a href="#" className="text-gray-600 hover:text-teal-600 transition-colors">หน้าหลัก</a>
+              <a href="#" className="text-gray-600 hover:text-teal-600 transition-colors">หลักสูตรทั้งหมด</a>
+              <a href="#" className="text-teal-600 font-semibold">Code Camp</a>
+              <a href="#" className="text-gray-600 hover:text-teal-600 transition-colors">โปรไฟล์</a>
+            </div>
+          </div>
+        </nav>
+        <div className="flex items-center gap-4">
+          <label className="relative inline-flex items-center cursor-pointer">
+            <input type="checkbox" className="sr-only peer" />
+            <div className="w-11 h-6 bg-gray-300 rounded-full peer peer-checked:bg-teal-500 transition-colors duration-300"></div>
+            <div className="absolute top-0.5 left-0.5 bg-white rounded-full h-5 w-5 transition-transform duration-300 peer-checked:translate-x-5"></div>
+          </label>
+          <button className="px-6 py-2 bg-gradient-to-r from-teal-500 to-teal-600 text-white rounded-full hover:from-teal-600 hover:to-teal-700 shadow-md transition-all">
+            เข้าสู่ระบบ
+          </button>
         </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {mode === 'backend' ? (
-            <>
-              {/* === โหมด Backend (ของเดิม) === */}
-              <div className="bg-white rounded-lg shadow p-6">
-                <div className="mb-4 space-y-3">
-                  <div className="flex items-center gap-4">
-                    <label className="font-semibold w-32">ภาษา:</label>
-                    <select
-                      value={language}
-                      onChange={(e) => handleLanguageChange(e.target.value)}
-                      className="border rounded px-4 py-2 flex-1"
-                    >
-                      <option value="javascript">JavaScript (Node.js)</option>
-                      <option value="python">Python 3</option>
-                      <option value="java">Java</option>
-                      <option value="cpp">C++</option>
-                      <option value="c">C</option>
-                      <option value="csharp">C#</option>
-                      <option value="go">Go</option>
-                      <option value="ruby">Ruby</option>
-                      <option value="php">PHP</option>
-                      <option value="swift">Swift</option>
-                      <option value="kotlin">Kotlin</option>
-                      <option value="rust">Rust</option>
-                      <option value="typescript">TypeScript</option>
-                      <option value="sql">SQL (MySQL)</option>
-                      <option value="bash">Bash</option>
-                    </select>
+
+      </header>
+
+      {/* Main Content - 3 Columns */}
+      <div className="grid grid-cols-12 gap-0" style={{ height: 'calc(100vh - 73px - 52px)' }}>
+
+        {/* Left Panel - โจทย์ */}
+        <div className="col-span-3 bg-white border-r border-gray-200 overflow-y-auto">
+          <div className="sticky top-0 bg-gradient-to-r from-teal-600 to-teal-700 text-white px-6 py-4 font-bold text-center shadow-md">
+            📋 โจทย์
+          </div>
+
+          {isLoading ? (
+            <div className="p-6 text-center text-gray-400">
+              <div className="animate-spin w-8 h-8 border-4 border-teal-500 border-t-transparent rounded-full mx-auto mb-3"></div>
+              <p>กำลังโหลด...</p>
+            </div>
+          ) : (
+            <div className="p-6">
+              {/* Challenge Info */}
+              <div className="mb-6">
+                <h2 className="text-xl font-bold text-gray-800 mb-3">{challengeData.title}</h2>
+
+                {/* แสดงเงื่อนไข Syntax (ถ้ามี) */}
+                {challengeData.validation_mode === 'syntax_check' && (
+                  <div className="bg-gradient-to-r from-yellow-50 to-orange-50 border-l-4 border-yellow-400 rounded-r p-4 mb-4 shadow-sm">
+                    <p className="text-sm font-bold text-yellow-800 mb-2 flex items-center gap-2">
+                      <span className="text-xl">⚠️</span>
+                      เงื่อนไขพิเศษ
+                    </p>
+                    {challengeData.required_keywords.length > 0 && (
+                      <div className="mb-2">
+                        <p className="text-xs text-yellow-700 font-semibold mb-1">✅ ต้องใช้คำสั่ง:</p>
+                        <div className="flex flex-wrap gap-1">
+                          {challengeData.required_keywords.map((keyword: string, i: number) => (
+                            <span key={i} className="px-2 py-1 bg-green-100 text-green-800 text-xs rounded font-mono">
+                              {keyword}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {challengeData.forbidden_keywords.length > 0 && (
+                      <div>
+                        <p className="text-xs text-yellow-700 font-semibold mb-1">❌ ห้ามใช้คำสั่ง:</p>
+                        <div className="flex flex-wrap gap-1">
+                          {challengeData.forbidden_keywords.map((keyword: string, i: number) => (
+                            <span key={i} className="px-2 py-1 bg-red-100 text-red-800 text-xs rounded font-mono">
+                              {keyword}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                   </div>
+                )}
+
+                <div className="flex items-center gap-4 text-sm text-gray-600 mb-4">
+                  <span className="flex items-center gap-1">
+                    ❤️ <strong>{challengeData.likes}</strong>
+                  </span>
+                  <span className="flex items-center gap-1">
+                    🏆 <strong>1</strong>
+                  </span>
                 </div>
 
-                <div className="mb-4">
-                  <label className="font-semibold block mb-2">เขียนโค้ดของคุณ:</label>
-                  <CodeEditor
-                    defaultCode={code}
-                    language={language}
-                    onCodeChange={setCode}
-                    height="400px"
-                  />
-                </div>
+                <button className="w-full py-2.5 border-2 border-teal-600 text-teal-600 rounded-lg font-semibold hover:bg-teal-50 transition-colors mb-3">
+                  + บันทึกโจทย์
+                </button>
 
-                <div className="flex gap-3">
-                  <button
-                    onClick={handleSubmit}
-                    disabled={isSubmitting}
-                    className="bg-green-600 hover:bg-green-700 disabled:bg-gray-400 
-                             text-white px-6 py-3 rounded-lg font-semibold flex-1"
-                  >
-                    {isSubmitting ? '⏳ กำลังส่งคำตอบ...' : '▶️ Run & Submit'}
-                  </button>
-
-                  <button
-                    onClick={() => {
-                      setCode(allCodeTemplates[language] || '');
-                      setResponse(null);
-                    }}
-                    className="bg-gray-300 hover:bg-gray-400 px-6 py-3 rounded-lg font-semibold"
-                  >
-                    🔄 Reset
-                  </button>
+                <div className="flex items-center gap-1">
+                  {[...Array(5)].map((_, i) => (
+                    <span key={i} className={`text-xl ${i < challengeData.difficulty ? 'text-yellow-400' : 'text-gray-300'}`}>
+                      ★
+                    </span>
+                  ))}
+                  <span className="ml-2 text-sm text-gray-600">({challengeData.difficulty}/5)</span>
                 </div>
               </div>
 
-              {/* ฝั่งขวา: Results */}
-              <div className="bg-white rounded-lg shadow p-6">
-                <h2 className="text-xl font-bold mb-4">📊 ผลลัพธ์</h2>
+              {/* คำอธิบาย */}
+              <div className="mb-6">
+                <h3 className="font-bold text-gray-800 mb-3 flex items-center gap-2">
+                  <span className="text-lg">📝</span>
+                  คำอธิบาย
+                </h3>
+                <div className="bg-gray-50 rounded-lg p-4 text-sm text-gray-700 leading-relaxed border border-gray-200">
+                  {challengeData.description}
+                </div>
+              </div>
 
-                {!response ? (
-                  <div className="text-center text-gray-400 py-12">
-                    <div className="text-6xl mb-4">📝</div>
-                    <p>เขียนโค้ดแล้วกด "Run & Submit" เพื่อดูผลลัพธ์</p>
+              {/* Test Cases */}
+              {challengeData.testCases.map((testCase: any, index: number) => (
+                <div key={index} className="mb-6 bg-gradient-to-br from-blue-50 to-indigo-50 rounded-lg p-4 border border-blue-200">
+                  <h3 className="font-bold text-blue-800 mb-3 flex items-center gap-2">
+                    <span className="text-lg">🧪</span>
+                    ตัวอย่าง {index + 1}
+                  </h3>
+
+                  <div className="mb-3">
+                    <label className="text-xs text-blue-700 font-semibold mb-1 block">📥 ข้อมูลเข้า</label>
+                    <div className="bg-white rounded p-3 text-sm text-gray-800 border border-blue-200 font-mono">
+                      {testCase.input || 'ไม่มี'}
+                    </div>
                   </div>
-                ) : (
-                  <div className="space-y-4">
-                    {/* สถานะ */}
-                    <div className={`p-4 rounded-lg border-2 ${response.isCorrect
-                      ? 'bg-green-50 border-green-300'
-                      : 'bg-red-50 border-red-300'
-                      }`}>
-                      <div className="flex items-center gap-3 mb-2">
-                        <span className="text-3xl">
-                          {response.isCorrect ? '✅' : '❌'}
-                        </span>
-                        <div>
-                          <p className={`font-bold text-lg ${response.isCorrect ? 'text-green-800' : 'text-red-800'}`}>
-                            {response.isCorrect ? 'ถูกต้อง!' : 'ไม่ถูกต้อง'}
-                          </p>
-                          <p className={`text-sm ${response.isCorrect ? 'text-green-700' : 'text-red-700'}`}>
-                            {response.message}
-                          </p>
-                        </div>
-                      </div>
+
+                  <div>
+                    <label className="text-xs text-blue-700 font-semibold mb-1 block">📤 ข้อมูลออก</label>
+                    <div className="bg-white rounded p-3 text-sm text-gray-800 border border-blue-200 font-mono">
+                      {testCase.output || 'ไม่มี'}
                     </div>
-
-                    {/* Output */}
-                    <div>
-                      <h3 className="font-semibold mb-2">ผลลัพธ์ที่ได้:</h3>
-                      <div className="bg-gray-900 text-green-400 p-4 rounded font-mono text-sm whitespace-pre-wrap">
-                        {response.actualOutput || '(ไม่มีผลลัพธ์)'}
-                      </div>
-                    </div>
-
-                    {/* Expected Output (ถ้าผิด) */}
-                    {!response.isCorrect && response.expectedOutput && (
-                      <div>
-                        <h3 className="font-semibold mb-2 text-blue-700">ผลลัพธ์ที่คาดหวัง:</h3>
-                        <div className="bg-blue-50 border border-blue-200 p-4 rounded font-mono text-sm whitespace-pre-wrap">
-                          {response.expectedOutput}
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Error Details */}
-                    {response.details && (
-                      <div>
-                        <h3 className="font-semibold mb-2 text-red-700">รายละเอียดข้อผิดพลาด:</h3>
-                        <div className="bg-red-50 border border-red-200 p-4 rounded font-mono text-sm whitespace-pre-wrap">
-                          {response.details}
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Execution Info */}
-                    <div className="bg-gray-100 p-3 rounded text-sm space-y-1">
-                      <div><strong>Challenge ID:</strong> {response.challengeId}</div>
-                      {response.executionTime && (
-                        <div><strong>เวลาที่ใช้:</strong> {response.executionTime}s</div>
-                      )}
-                      <div><strong>เวลา:</strong> {new Date(response.timestamp).toLocaleString('th-TH')}</div>
-                    </div>
-
-                    {/* Full JSON */}
-                    <details className="text-sm">
-                      <summary className="cursor-pointer font-semibold hover:text-blue-600">
-                        📋 ดู JSON Response
-                      </summary>
-                      <pre className="bg-gray-100 p-4 rounded overflow-x-auto mt-2 text-xs">
-                        {JSON.stringify(response, null, 2)}
-                      </pre>
-                    </details>
                   </div>
-                )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Middle Panel - Code Editor */}
+        <div className="col-span-6 bg-white border-r border-gray-200 flex flex-col">
+          <div className="bg-gradient-to-r from-teal-600 to-teal-700 text-white px-6 py-3 flex items-center justify-between shadow-md">
+            <span className="font-bold uppercase tracking-wide">{language}</span>
+            <select
+              value={language}
+              onChange={(e) => handleLanguageChange(e.target.value)}
+              className="bg-teal-800 text-white px-4 py-2 rounded-lg cursor-pointer font-semibold hover:bg-teal-900 transition-colors outline-none"
+            >
+              <option value="web">🌐 HTML/CSS/JS</option>
+              <optgroup label="ภาษายอดนิยม">
+                <option value="javascript">JavaScript</option>
+                <option value="python">Python</option>
+                <option value="java">Java</option>
+                <option value="cpp">C++</option>
+              </optgroup>
+              <optgroup label="Web Development">
+                <option value="typescript">TypeScript</option>
+                <option value="php">PHP</option>
+              </optgroup>
+              <optgroup label="System Programming">
+                <option value="c">C</option>
+                <option value="rust">Rust</option>
+                <option value="go">Go</option>
+              </optgroup>
+              <optgroup label="Mobile & Modern">
+                <option value="swift">Swift</option>
+                <option value="kotlin">Kotlin</option>
+              </optgroup>
+              <optgroup label="Enterprise">
+                <option value="csharp">C#</option>
+                <option value="scala">Scala</option>
+              </optgroup>
+              <optgroup label="Scripting">
+                <option value="ruby">Ruby</option>
+                <option value="perl">Perl</option>
+                <option value="bash">Bash</option>
+                <option value="r">R</option>
+              </optgroup>
+              <optgroup label="Database">
+                <option value="sql">SQL</option>
+              </optgroup>
+            </select>
+          </div>
+
+          {language === 'web' ? (
+            <>
+              <WebEditor
+                onCodeChange={({ htmlCode: h, cssCode: c, jsCode: j }) => {
+                  setHtmlCode(h);
+                  setCssCode(c);
+                  setJsCode(j);
+                }}
+                onSubmit={handleSubmit}
+                isSubmitting={isSubmitting}
+                initialHtml={htmlCode}
+                initialCss={cssCode}
+                initialJs={jsCode}
+              />
+              {/* ปุ่ม REBOOT และ SUBMIT สำหรับ Web Mode */}
+              <div className="border-t border-gray-200 p-4 flex gap-3 justify-end bg-white">
+                <button
+                  onClick={handleReboot}
+                  className="px-10 py-2.5 bg-gray-500 text-white rounded-lg font-semibold hover:bg-gray-600 transition-colors shadow-sm flex items-center gap-2"
+                >
+                  🔄 REBOOT
+                </button>
+                <button
+                  onClick={handleSubmit}
+                  disabled={isSubmitting}
+                  className="px-10 py-2.5 bg-gradient-to-r from-teal-600 to-teal-700 text-white rounded-lg font-semibold hover:from-teal-700 hover:to-teal-800 disabled:from-gray-400 disabled:to-gray-400 transition-all shadow-md flex items-center gap-2"
+                >
+                  {isSubmitting ? '⏳ กำลังตรวจสอบ...' : '✅ SUBMIT'}
+                </button>
               </div>
             </>
           ) : (
             <>
-              {/* === โหมด Web Playground === */}
-              <div className="bg-white rounded-lg shadow p-6 space-y-4">
-                <div>
-                  <label className="font-semibold block mb-2 text-blue-600">HTML:</label>
-                  <CodeEditor defaultCode={htmlCode} language="html" onCodeChange={setHtmlCode} height="150px" />
+              <div className="flex-1 overflow-hidden relative bg-gray-900">
+                <div className="absolute inset-0">
+                  <CodeEditor
+                    defaultCode={code}
+                    language={language}
+                    onCodeChange={setCode}
+                    height="100%"
+                  />
                 </div>
-                <div>
-                  <label className="font-semibold block mb-2 text-green-600">CSS:</label>
-                  <CodeEditor defaultCode={cssCode} language="css" onCodeChange={setCssCode} height="150px" />
-                </div>
-                <div>
-                  <label className="font-semibold block mb-2 text-yellow-600">JavaScript:</label>
-                  <CodeEditor defaultCode={jsCode} language="javascript" onCodeChange={setJsCode} height="150px" />
-                </div>
-
+              </div>
+              <div className="border-t border-gray-200 p-4 flex gap-3 justify-end bg-white">
+                <button
+                  onClick={handleReboot}
+                  className="px-10 py-2.5 bg-gray-500 text-white rounded-lg font-semibold hover:bg-gray-600 transition-colors shadow-sm flex items-center gap-2"
+                >
+                  🔄 REBOOT
+                </button>
                 <button
                   onClick={handleSubmit}
                   disabled={isSubmitting}
-                  className="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white w-full py-3 rounded-lg font-semibold"
+                  className="px-10 py-2.5 bg-gradient-to-r from-teal-600 to-teal-700 text-white rounded-lg font-semibold hover:from-teal-700 hover:to-teal-800 disabled:from-gray-400 disabled:to-gray-400 transition-all shadow-md flex items-center gap-2"
                 >
-                  {isSubmitting ? '⏳ กำลังตรวจสอบ...' : '🚀 ตรวจสอบผลลัพธ์'}
+                  {isSubmitting ? '⏳ กำลังตรวจสอบ...' : '✅ SUBMIT'}
                 </button>
-              </div>
-
-              {/* ฝั่งขวา: Live Preview + Results */}
-              <div className="space-y-6">
-                {/* Live Preview */}
-                <div className="bg-white rounded-lg shadow">
-                  <h2 className="text-xl font-bold p-6 pb-2">🖥️ ผลลัพธ์หน้าเว็บ (Live Preview)</h2>
-                  <iframe
-                    srcDoc={webOutput}
-                    title="Web Output"
-                    sandbox="allow-scripts"
-                    className="w-full h-[300px] border-t"
-                  />
-                </div>
-
-                {/* Results */}
-                <div className="bg-white rounded-lg shadow p-6">
-                  <h2 className="text-xl font-bold mb-4">📊 ผลการตรวจสอบ</h2>
-
-                  {!response ? (
-                    <div className="text-center text-gray-400 py-8">
-                      <div className="text-5xl mb-3">🔍</div>
-                      <p>กด "ตรวจสอบผลลัพธ์" เพื่อดูว่าโค้ดของคุณถูกต้องหรือไม่</p>
-                    </div>
-                  ) : (
-                    <div className="space-y-4">
-                      {/* สถานะ */}
-                      <div className={`p-4 rounded-lg border-2 ${response.isCorrect
-                        ? 'bg-green-50 border-green-300'
-                        : 'bg-red-50 border-red-300'
-                        }`}>
-                        <div className="flex items-center gap-3 mb-2">
-                          <span className="text-3xl">
-                            {response.isCorrect ? '✅' : '❌'}
-                          </span>
-                          <div>
-                            <p className={`font-bold text-lg ${response.isCorrect ? 'text-green-800' : 'text-red-800'}`}>
-                              {response.isCorrect ? 'ถูกต้อง!' : 'ไม่ถูกต้อง'}
-                            </p>
-                            <p className={`text-sm ${response.isCorrect ? 'text-green-700' : 'text-red-700'}`}>
-                              {response.message}
-                            </p>
-                          </div>
-                        </div>
-                      </div>
-
-                      {/* Output */}
-                      {response.actualOutput && (
-                        <div>
-                          <h3 className="font-semibold mb-2">ผลลัพธ์ที่ได้:</h3>
-                          <div className="bg-gray-900 text-green-400 p-4 rounded font-mono text-sm whitespace-pre-wrap">
-                            {response.actualOutput}
-                          </div>
-                        </div>
-                      )}
-
-                      {/* Expected Output (ถ้าผิด) */}
-                      {!response.isCorrect && response.expectedOutput && (
-                        <div>
-                          <h3 className="font-semibold mb-2 text-blue-700">สิ่งที่โจทย์คาดหวัง:</h3>
-                          <div className="bg-blue-50 border border-blue-200 p-4 rounded font-mono text-sm whitespace-pre-wrap">
-                            {response.expectedOutput}
-                          </div>
-                        </div>
-                      )}
-
-                      {/* Execution Info */}
-                      <div className="bg-gray-100 p-3 rounded text-sm space-y-1">
-                        <div><strong>Challenge ID:</strong> {response.challengeId}</div>
-                        {response.executionTime && (
-                          <div><strong>เวลาที่ใช้:</strong> {response.executionTime}s</div>
-                        )}
-                        <div><strong>เวลา:</strong> {new Date(response.timestamp).toLocaleString('th-TH')}</div>
-                      </div>
-
-                      {/* Full JSON */}
-                      <details className="text-sm">
-                        <summary className="cursor-pointer font-semibold hover:text-blue-600">
-                          📋 ดู JSON Response
-                        </summary>
-                        <pre className="bg-gray-100 p-4 rounded overflow-x-auto mt-2 text-xs">
-                          {JSON.stringify(response, null, 2)}
-                        </pre>
-                      </details>
-                    </div>
-                  )}
-                </div>
               </div>
             </>
           )}
         </div>
 
-        {/* คำอธิบายระบบ */}
-        <div className="mt-6 bg-yellow-50 border border-yellow-200 rounded-lg p-6">
-          <h3 className="font-bold text-lg mb-3">⚙️ วิธีการทำงาน:</h3>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
-            <div>
-              <p className="font-semibold mb-2">Frontend:</p>
-              <ul className="space-y-1 ml-5 list-disc text-gray-700">
-                <li>ใช้ Monaco Editor เขียนโค้ด</li>
-                <li>ส่งโค้ดไปยัง Backend API</li>
-                <li>แสดงผลลัพธ์ที่ได้</li>
-              </ul>
-            </div>
-            <div>
-              <p className="font-semibold mb-2">Backend:</p>
-              <ul className="space-y-1 ml-5 list-disc text-gray-700">
-                <li>รับโค้ดจาก Frontend</li>
-                <li>รันโค้ดด้วย Paiza.IO หรือ Validation Script</li>
-                <li>เปรียบเทียบผลกับ Supabase</li>
-                <li>ส่งผลลัพธ์กลับมา</li>
-              </ul>
-            </div>
+        {/* Right Panel - ผลลัพธ์ */}
+        <div className="col-span-3 bg-white overflow-y-auto">
+          <div className="sticky top-0 bg-gradient-to-r from-teal-600 to-teal-700 text-white px-6 py-4 font-bold text-center shadow-md">
+            📊 ผลลัพธ์
+          </div>
+
+          <div className="p-6">
+            {!response ? (
+              <div className="text-center text-gray-400 py-16">
+                <div className="text-6xl mb-4">📝</div>
+                <p className="text-sm font-medium">กด SUBMIT เพื่อดูผลลัพธ์</p>
+                <p className="text-xs text-gray-400 mt-2">ระบบจะตรวจสอบโค้ดของคุณ</p>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {/* สถานะ */}
+                <div className={`p-5 rounded-xl border-2 shadow-lg ${response.isCorrect
+                  ? 'bg-gradient-to-br from-green-50 to-emerald-50 border-green-400'
+                  : 'bg-gradient-to-br from-red-50 to-pink-50 border-red-400'
+                  }`}>
+                  <div className="flex items-center gap-3">
+                    <span className="text-4xl">
+                      {response.isCorrect ? '✅' : '❌'}
+                    </span>
+                    <div>
+                      <p className={`font-bold text-lg ${response.isCorrect ? 'text-green-800' : 'text-red-800'
+                        }`}>
+                        {response.isCorrect ? 'ถูกต้อง!' : 'ไม่ถูกต้อง'}
+                      </p>
+                      <p className={`text-sm ${response.isCorrect ? 'text-green-700' : 'text-red-700'
+                        }`}>
+                        {response.message}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                {/* แสดง Syntax Errors (ถ้ามี) */}
+                {response.syntaxErrors && response.syntaxErrors.length > 0 && (
+                  <div className="bg-gradient-to-br from-yellow-50 to-orange-50 border-l-4 border-yellow-400 rounded-r p-4 shadow-md">
+                    <h3 className="font-bold text-yellow-800 mb-3 flex items-center gap-2">
+                      <span className="text-xl">⚠️</span>
+                      ข้อผิดพลาด Syntax
+                    </h3>
+                    <ul className="space-y-2">
+                      {response.syntaxErrors.map((err: string, i: number) => (
+                        <li key={i} className="flex items-start gap-2 text-sm text-yellow-800">
+                          <span className="text-red-500 font-bold">•</span>
+                          <span>{err}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                {/* Output */}
+                {response.actualOutput && (
+                  <div>
+                    <h3 className="font-bold mb-2 text-sm text-gray-700 flex items-center gap-2">
+                      <span>💻</span>
+                      ผลลัพธ์ของคุณ:
+                    </h3>
+                    <div className="bg-gray-900 text-green-400 p-4 rounded-lg text-xs font-mono whitespace-pre-wrap border-2 border-gray-700 shadow-inner">
+                      {response.actualOutput}
+                    </div>
+                  </div>
+                )}
+
+                {/* Expected Output (ถ้าผิด) */}
+                {!response.isCorrect && response.expectedOutput && (
+                  <div>
+                    <h3 className="font-bold mb-2 text-sm text-blue-700 flex items-center gap-2">
+                      <span>🎯</span>
+                      ผลลัพธ์ที่คาดหวัง:
+                    </h3>
+                    <div className="bg-blue-50 border-2 border-blue-300 p-4 rounded-lg text-xs font-mono whitespace-pre-wrap shadow-sm">
+                      {response.expectedOutput}
+                    </div>
+                  </div>
+                )}
+
+                {/* Execution Info */}
+                {response.executionTime && (
+                  <div className="bg-gradient-to-br from-gray-50 to-slate-100 p-4 rounded-lg text-xs space-y-2 border border-gray-200 shadow-sm">
+                    <div className="flex items-center justify-between">
+                      <span className="text-gray-600">⏱️ เวลาที่ใช้:</span>
+                      <strong className="text-gray-800">{response.executionTime}s</strong>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-gray-600">🆔 Challenge ID:</span>
+                      <strong className="text-gray-800">#{response.challengeId}</strong>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         </div>
+      </div>
+
+      {/* Bottom Progress Bar */}
+      <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-300 px-6 py-3 flex items-center gap-4 shadow-lg">
+        <div className="flex-1 bg-gray-200 rounded-full h-3 overflow-hidden max-w-4xl shadow-inner">
+          <div
+            className="bg-gradient-to-r from-teal-500 to-teal-600 h-full transition-all duration-500 ease-out shadow-sm"
+            style={{ width: `${(currentTestCase / totalTestCases) * 100}%` }}
+          />
+        </div>
+        <span className="text-sm text-gray-700 font-bold whitespace-nowrap min-w-[80px]">
+          {currentTestCase} / {totalTestCases}
+        </span>
+        <button
+          onClick={handleNext}
+          disabled={currentTestCase >= totalTestCases}
+          className="px-8 py-2 bg-gradient-to-r from-gray-200 to-gray-300 text-gray-700 rounded-lg hover:from-gray-300 hover:to-gray-400 font-semibold disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-sm"
+        >
+          ถัดไป →
+        </button>
       </div>
     </div>
   );
