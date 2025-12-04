@@ -25,6 +25,7 @@ export default function CodeEditor({
   const decorationsRef = useRef([]);
   const protectedDecorationsRef = useRef([]);
   const originalContentsRef = useRef([]);
+  const isRemoteUpdate = useRef(false);
 
   // เมื่อ Editor โหลดเสร็จ
   function handleEditorDidMount(editor, monaco) {
@@ -144,6 +145,11 @@ export default function CodeEditor({
 
     // Listen for changes
     editor.onDidChangeModelContent((e) => {
+       // ถ้าเป็นการ Flush หรือ Remote Update (เช่น Reboot) ให้ข้ามการตรวจสอบ
+       if (e.isFlush || isRemoteUpdate.current) {
+         isRemoteUpdate.current = false;
+         return;
+       }
        validateAndRevert(e.changes);
     });
     
@@ -175,62 +181,52 @@ export default function CodeEditor({
   const validateAndRevert = (changes) => {
     if (!editorRef.current || !monacoRef.current) return;
     const editor = editorRef.current;
-    const monaco = monacoRef.current;
     const currentModel = editor.getModel();
     let shouldRevert = false;
 
-    // A. ตรวจสอบว่า Change ทับกับ Protected Range หรือไม่
-    for (const change of changes) {
-      const changeRange = change.range;
-      
-      for (const id of protectedDecorationsRef.current) {
-        const protectedRange = currentModel.getDecorationRange(id);
-        if (!protectedRange) continue;
-
-        // ตรวจสอบการ Intersect
-        const intersection = monaco.Range.intersectRanges(changeRange, protectedRange);
+    // ตรวจสอบ Integrity
+    protectedDecorationsRef.current.forEach((id, index) => {
+      const range = currentModel.getDecorationRange(id);
+      if (range) {
+        const currentContent = currentModel.getValueInRange(range);
+        const originalContent = originalContentsRef.current[index];
         
-        if (intersection && !intersection.isEmpty()) {
-          // ถ้ามีการทับซ้อน (กินเนื้อหา) -> ห้าม
+        // ถ้าเนื้อหาไม่ตรงกับต้นฉบับ
+        if (currentContent !== originalContent) {
+          // อนุญาตให้มี Newline ต่อท้ายได้ (กรณี Enter ที่ท้ายบรรทัด)
+          // ตรวจสอบว่าเนื้อหาเดิมยังอยู่ครบถ้วน และส่วนที่เกินมาเป็นแค่ Whitespace/Newline
+          if (currentContent.startsWith(originalContent) && !originalContent.includes('\n')) {
+             const diff = currentContent.substring(originalContent.length);
+             if (!diff.trim()) {
+               // ถ้าส่วนที่เกินมาเป็นแค่ whitespace (เช่น \n) ถือว่ายอมรับได้
+               return; 
+             }
+          }
+          
           shouldRevert = true;
-          break;
         }
       }
-      if (shouldRevert) break;
-    }
-
-    // B. ตรวจสอบ Integrity (กันเหนียว กรณีลบขอบหรืออื่นๆ)
-    if (!shouldRevert) {
-      protectedDecorationsRef.current.forEach((id, index) => {
-        const range = currentModel.getDecorationRange(id);
-        if (range) {
-          const currentContent = currentModel.getValueInRange(range);
-          if (currentContent !== originalContentsRef.current[index]) {
-            shouldRevert = true;
-          }
-        }
-      });
-    }
+    });
 
     if (shouldRevert) {
-      // แจ้งเตือน
       if (onReadOnlyWarning) onReadOnlyWarning();
-      
-      // Undo โดยใช้ setTimeout เพื่อให้แน่ใจว่าทำงานหลัง event loop ปัจจุบัน
       setTimeout(() => {
          editor.trigger('keyboard', 'undo', null);
       }, 0);
     } else {
-       // Valid change -> trigger callback
        if (onCodeChange) onCodeChange(editor.getValue());
     }
   };
 
-  // Effect สำหรับ Protected Ranges (ทำงานเมื่อ protectedRanges เปลี่ยน)
+  // Effect สำหรับ Protected Ranges
   useEffect(() => {
     if (!editorRef.current || !monacoRef.current) return;
     const editor = editorRef.current;
     const monaco = monacoRef.current;
+    const model = editor.getModel();
+
+    // Mark as remote update to skip validation during setup
+    isRemoteUpdate.current = true;
 
     // 1. ลบ Decorations เดิม
     if (protectedDecorationsRef.current.length > 0) {
@@ -243,35 +239,44 @@ export default function CodeEditor({
     if (protectedRanges.length > 0) {
       console.log('Applying protected ranges:', protectedRanges);
       
-      const protectedDecorations = protectedRanges.map(range => ({
-        range: new monaco.Range(
-          range.startLine,
-          range.startColumn || 1,
-          range.endLine,
-          range.endColumn || Number.MAX_SAFE_INTEGER
-        ),
-        options: {
-          isWholeLine: false,
-          className: 'protected-line-highlight',
-          glyphMarginClassName: 'protected-line-glyph',
-          linesDecorationsClassName: 'protected-line-decoration',
-          stickiness: monaco.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges,
-          hoverMessage: { value: '🔒 ส่วนนี้เป็นโจทย์ ห้ามแก้ไข' }
-        }
-      }));
+      const protectedDecorations = protectedRanges.map(range => {
+        const maxCol = model.getLineMaxColumn(range.startLine);
+        
+        return {
+          range: new monaco.Range(
+            range.startLine,
+            range.startColumn || 1,
+            range.endLine,
+            range.endColumn || maxCol
+          ),
+          options: {
+            isWholeLine: false,
+            className: 'protected-line-highlight',
+            glyphMarginClassName: 'protected-line-glyph',
+            linesDecorationsClassName: 'protected-line-decoration',
+            stickiness: monaco.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges,
+            hoverMessage: { value: '🔒 ส่วนนี้เป็นโจทย์ ห้ามแก้ไข' }
+          }
+        };
+      });
 
-      // Apply decorations
       const decorationIds = editor.deltaDecorations([], protectedDecorations);
       protectedDecorationsRef.current = decorationIds;
 
-      // 3. เก็บเนื้อหาต้นฉบับ (เพื่อตรวจสอบ Integrity)
-      const model = editor.getModel();
       originalContentsRef.current = decorationIds.map(id => {
         const range = model.getDecorationRange(id);
         return model.getValueInRange(range);
       });
     }
-  }, [protectedRanges, defaultCode]); // เพิ่ม defaultCode เพื่อให้มั่นใจว่าทำงานหลังจากโค้ดเปลี่ยน
+  }, [protectedRanges, defaultCode]);
+
+  // Effect to handle external code updates (e.g. Reboot)
+  useEffect(() => {
+    if (editorRef.current && defaultCode !== editorRef.current.getValue()) {
+       isRemoteUpdate.current = true;
+       editorRef.current.setValue(defaultCode);
+    }
+  }, [defaultCode]);
 
   // จัดการ errors
   useEffect(() => {
@@ -306,22 +311,14 @@ export default function CodeEditor({
     }
   }, [errors]);
 
-  // จัดการการเปลี่ยนแปลงโค้ด (สำหรับกรณีไม่มี protected ranges)
-  function handleEditorChange(value) {
-    if (protectedRanges.length === 0 && onCodeChange) {
-      onCodeChange(value);
-    }
-  }
-
   return (
     <>
       <Editor
         height={height || '100%'}
         language={language}
-        value={defaultCode} // ใช้ value เพื่อให้เป็น Controlled Component (หรืออย่างน้อย update ตาม prop)
+        value={defaultCode}
         theme="vs-dark"
         onMount={handleEditorDidMount}
-        // onChange={handleEditorChange} // ไม่ต้องใช้ onChange ของ Editor โดยตรง เพราะเราใช้ onDidChangeModelContent แล้ว
         options={{
           selectOnLineNumbers: true,
           roundedSelection: false,
