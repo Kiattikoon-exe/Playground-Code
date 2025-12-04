@@ -128,3 +128,17 @@
 .dark .shadow-xl {
   box-shadow: 0 0 15px rgba(0, 0, 0, 0.3);
 }
+
+/* Read-Only Line Decorations */
+.read-only-line {
+  background-color: rgba(255, 200, 0, 0.1);
+}
+.read-only-glyph {
+  background-color: #ffc107;
+  width: 3px !important;
+  margin-left: 3px;
+}
+.read-only-line-decoration {
+  background-color: rgba(255, 200, 0, 0.3);
+  width: 5px !important;
+}

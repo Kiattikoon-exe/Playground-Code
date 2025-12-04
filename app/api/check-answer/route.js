@@ -136,8 +136,14 @@ function getSyntaxPattern(keyword, language) {
   // ใช้ pattern ของภาษานั้นๆ หรือ fallback เป็น javascript
   const langPatterns = patterns[language] || patterns["javascript"];
   
-  // ถ้าไม่เจอ pattern ก็ค้นหาแบบ simple word boundary
-  return langPatterns[keyword] || new RegExp(`\\b${keyword}\\b`);
+  // ถ้าเจอ pattern ที่กำหนดไว้ ให้ใช้เลย
+  if (langPatterns[keyword]) {
+    return langPatterns[keyword];
+  }
+  
+  // ถ้าไม่เจอ ให้ escape special regex characters แล้วค้นหาแบบ literal
+  const escapedKeyword = keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(escapedKeyword);
 }
 
 // ========================================
@@ -241,38 +247,9 @@ export async function POST(request) {
       });
     }
 
-    // ========================================
-    // BRANCH 2: ตรวจสอบ Syntax (ถ้ามีเงื่อนไข)
-    // ========================================
-    const validationMode = challengeData.validation_mode || 'output_only';
-    
-    if (validationMode === "syntax_check") {
-      const syntaxErrors = validateSyntax(
-        answer,
-        challengeData.required_keywords || [],
-        challengeData.forbidden_keywords || [],
-        language
-      );
-
-      if (syntaxErrors.length > 0) {
-        // บันทึกคำตอบที่ผิด
-        await supabase.from("submiss").upsert({
-          id: parseInt(challengeId),
-          "ans-user": answer,
-        }, { onConflict: "id" });
-
-        return NextResponse.json({
-          isCorrect: false,
-          message: "โค้ดไม่ตรงตามเงื่อนไขของโจทย์",
-          syntaxErrors: syntaxErrors,
-          actualOutput: "",
-          timestamp: new Date().toISOString(),
-        });
-      }
-    }
 
     // ========================================
-    // BRANCH 3: ตรวจสอบภาษาที่รองรับ
+    // BRANCH 2: ตรวจสอบภาษาที่รองรับ
     // ========================================
     if (!LANGUAGE_MAP[language]) {
       return NextResponse.json({
@@ -284,7 +261,8 @@ export async function POST(request) {
     }
 
     // ========================================
-    // BRANCH 4: ตรวจสอบผลลัพธ์แบบปกติ (Paiza.IO)
+    // BRANCH 3: รันโค้ดผ่าน Paiza.IO ก่อนเสมอ
+    // (ป้องกันการ bypass ด้วย console.log)
     // ========================================
     const expectedOutputRaw = challengeData.expected_output || "";
     console.log("Expected Output (Raw):", expectedOutputRaw);
@@ -365,18 +343,39 @@ export async function POST(request) {
       });
     }
 
-    // ตรวจสอบ Runtime Error
-    if (result.result === "failure" || result.result === "timeout") {
-      return NextResponse.json({
-        isCorrect: false,
-        message: "เกิดข้อผิดพลาดในการรันโค้ด",
-        details: result.stderr || `Execution resulted in: ${result.result}`,
-        actualOutput: result.stdout || "",
-        timestamp: new Date().toISOString(),
-      });
+    // ========================================
+    // BRANCH 4: ตรวจสอบ Syntax หลังจาก compile สำเร็จ
+    // ========================================
+    const validationMode = challengeData.validation_mode || 'output_only';
+    
+    if (validationMode === "syntax_check") {
+      const syntaxErrors = validateSyntax(
+        answer,
+        challengeData.required_keywords || [],
+        challengeData.forbidden_keywords || [],
+        language
+      );
+
+      if (syntaxErrors.length > 0) {
+        // บันทึกคำตอบที่ผิด
+        await supabase.from("submiss").upsert({
+          id: parseInt(challengeId),
+          "ans-user": answer,
+        }, { onConflict: "id" });
+
+        return NextResponse.json({
+          isCorrect: false,
+          message: "โค้ดไม่ตรงตามเงื่อนไขของโจทย์",
+          syntaxErrors: syntaxErrors,
+          actualOutput: result.stdout || "",
+          timestamp: new Date().toISOString(),
+        });
+      }
     }
 
-    // เปรียบเทียบผลลัพธ์
+    // ========================================
+    // BRANCH 5: เปรียบเทียบผลลัพธ์
+    // ========================================
     const actualOutput = (result.stdout || "").trim().replace(/\r\n/g, "\n");
     const expectedOutputTrimmed = (expectedOutputRaw || "")
       .trim()
