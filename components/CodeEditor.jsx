@@ -218,15 +218,12 @@ export default function CodeEditor({
     }
   };
 
-  // Effect สำหรับ Protected Ranges
-  useEffect(() => {
+  // Helper function to update protected decorations
+  const updateProtectedDecorations = (ranges) => {
     if (!editorRef.current || !monacoRef.current) return;
     const editor = editorRef.current;
     const monaco = monacoRef.current;
     const model = editor.getModel();
-
-    // Mark as remote update to skip validation during setup
-    isRemoteUpdate.current = true;
 
     // 1. ลบ Decorations เดิม
     if (protectedDecorationsRef.current.length > 0) {
@@ -236,10 +233,10 @@ export default function CodeEditor({
     }
 
     // 2. สร้าง Decorations ใหม่
-    if (protectedRanges.length > 0) {
-      console.log('Applying protected ranges:', protectedRanges);
+    if (ranges.length > 0) {
+      console.log('Applying protected ranges:', ranges);
       
-      const protectedDecorations = protectedRanges.map(range => {
+      const protectedDecorations = ranges.map(range => {
         const maxCol = model.getLineMaxColumn(range.startLine);
         
         return {
@@ -268,13 +265,20 @@ export default function CodeEditor({
         return model.getValueInRange(range);
       });
     }
-  }, [protectedRanges, defaultCode]);
+  };
+
+  // Effect สำหรับ Protected Ranges (ทำงานเมื่อ protectedRanges เปลี่ยน)
+  useEffect(() => {
+    updateProtectedDecorations(protectedRanges);
+  }, [protectedRanges]); // REMOVED defaultCode dependency to fix infinite loop
 
   // Effect to handle external code updates (e.g. Reboot)
   useEffect(() => {
     if (editorRef.current && defaultCode !== editorRef.current.getValue()) {
        isRemoteUpdate.current = true;
        editorRef.current.setValue(defaultCode);
+       // Re-apply decorations after reboot to ensure they are in correct positions
+       updateProtectedDecorations(protectedRanges);
     }
   }, [defaultCode]);
 
