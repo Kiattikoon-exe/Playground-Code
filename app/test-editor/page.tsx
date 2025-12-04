@@ -2,13 +2,11 @@
 import { useState, useEffect } from 'react';
 import CodeEditor from '@/components/CodeEditor';
 import WebEditor from '@/components/WebEditor';
-import ResultModal from '@/components/ResultModal'; // <--- Import Component ที่แยกออกมา
+import ResultModal from '@/components/ResultModal';
 import { createClient } from '@supabase/supabase-js';
 import { useTheme } from 'next-themes';
 
-
-
-// ============ 1. ข้อมูลตัวเลือกภาษา (Data Structure) ============
+// ============ 1. ข้อมูลตัวเลือกภาษา ============
 const languageOptions = [
   {
     category: "HTML/CSS/JS",
@@ -21,7 +19,8 @@ const languageOptions = [
       { value: "javascript", label: "JAVASCRIPT" },
       { value: "python", label: "PYTHON" },
       { value: "java", label: "JAVA" },
-      { value: "cpp", label: "C++" }
+      { value: "cpp", label: "C++" },
+      { value: "c", label: "C" }
     ]
   },
   {
@@ -34,7 +33,6 @@ const languageOptions = [
   {
     category: "SYSTEM PROGRAMMING",
     items: [
-      { value: "c", label: "C" },
       { value: "rust", label: "RUST" },
       { value: "go", label: "GO" }
     ]
@@ -147,22 +145,23 @@ export default function TestEditorPage() {
   useEffect(() => {
     setMounted(true);
   }, []);
-  // ============ State หลัก ============
+
+  // ============ State ============
   const [code, setCode] = useState('public class HelloWorld {\n  public static void main(String[] args) {\n    System.out.println("Hello, World!");\n  }\n}');
   const [language, setLanguage] = useState('java');
   const [response, setResponse] = useState<any>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [challengeId, setChallengeId] = useState('1');
 
-  // ============ State สำหรับ Modal (เพิ่มใหม่) ============
   const [showModal, setShowModal] = useState(false);
+  const [showReadOnlyWarning, setShowReadOnlyWarning] = useState(false);
+  const [protectedRanges, setProtectedRanges] = useState<any[]>([]);
+  const [initialCode, setInitialCode] = useState('');
 
-  // ============ State สำหรับ Web Mode ============
   const [htmlCode, setHtmlCode] = useState('');
   const [cssCode, setCssCode] = useState('');
   const [jsCode, setJsCode] = useState('');
 
-  // ============ State สำหรับ Challenge Data ============
   const [challengeData, setChallengeData] = useState<any>({
     title: 'โจทย์',
     description: 'คำอธิบาย',
@@ -174,8 +173,9 @@ export default function TestEditorPage() {
     forbidden_keywords: []
   });
 
-  const [currentTestCase, setCurrentTestCase] = useState(1);
-  const [totalTestCases] = useState(10);
+  const [challengeIds, setChallengeIds] = useState<string[]>([]);
+  const [currentChallengeIndex, setCurrentChallengeIndex] = useState(0);
+  const totalChallenges = challengeIds.length;
   const [isLoading, setIsLoading] = useState(true);
 
   // ============ Template โค้ด ============
@@ -198,10 +198,35 @@ export default function TestEditorPage() {
     r: '# เขียนโค้ด R\nprint("Hello, World!")',
     scala: 'object Main extends App {\n  println("Hello, World!")\n}',
     perl: '#!/usr/bin/perl\nprint "Hello, World!\\n";',
-    web: '', // ใช้ WebEditor
+    web: '',
   };
 
-  // ============ โหลดข้อมูลจาก Supabase ============
+  // ============ Load IDs ============
+  useEffect(() => {
+    async function loadAllChallengeIds() {
+      const supabase = createClient(
+        process.env.NEXT_PUBLIC_SUPABASE_URL!,
+        process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+      );
+      const { data, error } = await supabase
+        .from('Codecamp')
+        .select('id')
+        .order('id', { ascending: true });
+
+      if (data) {
+        const ids = data.map(c => String(c.id));
+        setChallengeIds(ids);
+        const initialId = ids.includes(challengeId) ? challengeId : ids[0] || '1';
+        setChallengeId(initialId);
+        setCurrentChallengeIndex(ids.indexOf(initialId));
+      } else {
+        console.error("Error loading challenge IDs:", error);
+      }
+    }
+    loadAllChallengeIds();
+  }, []);
+
+  // ============ Load Challenge ============
   useEffect(() => {
     async function loadChallenge() {
       setIsLoading(true);
@@ -236,7 +261,15 @@ export default function TestEditorPage() {
           setCssCode(data.initial_css || '#app {\n  padding: 20px;\n  font-family: Arial;\n}');
           setJsCode(data.initial_js || '// JavaScript Code\nconsole.log("Ready!");');
         } else {
-          setCode(data.initial_code || codeTemplates[challengeLang] || '');
+          const initialCodeFromDB = data.initial_code || codeTemplates[challengeLang] || '';
+          setCode(initialCodeFromDB);
+          setInitialCode(initialCodeFromDB);
+
+          if (data.protected_ranges && data.protected_ranges.length > 0) {
+            setProtectedRanges(data.protected_ranges);
+          } else {
+            setProtectedRanges([]);
+          }
         }
       } else if (error) {
         console.error('Error loading challenge:', error);
@@ -245,19 +278,55 @@ export default function TestEditorPage() {
       setIsLoading(false);
     }
 
-    loadChallenge();
+    if (challengeId) {
+      loadChallenge();
+    }
   }, [challengeId]);
 
-  // ============ ฟังก์ชัน Submit (อัปเดต) ============
+  // ============ Submit ============
   const handleSubmit = async () => {
     setIsSubmitting(true);
     setResponse(null);
-    setShowModal(false); // Reset Modal
+    setShowModal(false);
+
+    // --- Enhanced Hardcode Detection ---
+    const expectedOutputs = challengeData.testCases.map((tc: any) => tc.output).filter(Boolean);
+    let isHardcoded = false;
+
+    if (language !== 'web' && expectedOutputs.length > 0) {
+      // Check for literal print statements of the answer
+      // Regex looks for: print/log/println followed by optional whitespace, parens, quotes, and the EXACT output
+      for (const output of expectedOutputs) {
+        // Escape special regex chars in output
+        const escapedOutput = output.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+        // Regex to match: print("OUTPUT") or print('OUTPUT') or print(OUTPUT) for numbers
+        // Covers: console.log, print, System.out.println, fmt.Println, etc.
+        const regex = new RegExp(`(console\\.log|print|println|fmt\\.Println|System\\.out\\.println)\\s*\\(\\s*(["'\`]?)${escapedOutput}\\2\\s*\\)`, 'i');
+
+        if (regex.test(code)) {
+          isHardcoded = true;
+          break;
+        }
+      }
+    }
+
+    if (isHardcoded) {
+      setResponse({
+        isCorrect: false,
+        message: 'ตรวจพบการ Hardcode ผลลัพธ์ (กรุณาใช้การคำนวณหรือฟังก์ชัน)',
+        isHardcoded: true,
+      });
+      setShowModal(true);
+      setIsSubmitting(false);
+      return;
+    }
+    // --- End Hardcode Detection ---
 
     try {
       const payload = language === 'web'
         ? { challengeId, language: 'web', htmlCode, cssCode, jsCode }
-        : { challengeId, answer: code, language };
+        : { challengeId, answer: code, language, validation_mode: challengeData.validation_mode };
 
       const res = await fetch('/api/check-answer', {
         method: 'POST',
@@ -267,44 +336,50 @@ export default function TestEditorPage() {
 
       const data = await res.json();
       setResponse(data);
-      setShowModal(true); // เปิด Modal เมื่อได้ผลลัพธ์
+      setShowModal(true);
 
     } catch (error) {
       console.error('Error:', error);
       setResponse({
         isCorrect: false,
         message: 'เกิดข้อผิดพลาดในการส่งคำตอบ',
+        syntaxErrors: [{ line: 1, message: "ไม่สามารถเชื่อมต่อกับเซิร์ฟเวอร์ได้" }]
       });
-      setShowModal(true); // เปิด Modal แม้จะ Error
+      setShowModal(true);
     } finally {
       setIsSubmitting(false);
     }
   };
 
-  // ============ ฟังก์ชัน Reboot ============
   const handleReboot = () => {
     if (language === 'web') {
-      setHtmlCode('<div id="app">\n  <h1>Hello World</h1>\n</div>');
-      setCssCode('#app { padding: 20px; }');
-      setJsCode('console.log("Hello");');
-    } else if (codeTemplates[language]) {
-      setCode(codeTemplates[language]);
+      window.location.reload();
+    } else {
+      setCode(initialCode);
     }
     setResponse(null);
   };
 
-  // ============ ฟังก์ชัน Next (อัปเดต) ============
-  const handleNext = () => {
-    setShowModal(false); // ปิด Modal ก่อนไปข้อต่อไป
-
-    if (currentTestCase < totalTestCases) {
-      setCurrentTestCase(prev => prev + 1);
-      setChallengeId(String(parseInt(challengeId) + 1));
+  const handleBack = () => {
+    setShowModal(false);
+    if (currentChallengeIndex > 0) {
+      const newIndex = currentChallengeIndex - 1;
+      setCurrentChallengeIndex(newIndex);
+      setChallengeId(challengeIds[newIndex]);
       setResponse(null);
     }
   };
 
-  // ============ ฟังก์ชันเปลี่ยนภาษา ============
+  const handleNext = () => {
+    setShowModal(false);
+    if (currentChallengeIndex < totalChallenges - 1) {
+      const newIndex = currentChallengeIndex + 1;
+      setCurrentChallengeIndex(newIndex);
+      setChallengeId(challengeIds[newIndex]);
+      setResponse(null);
+    }
+  };
+
   const handleLanguageChange = (newLanguage: string) => {
     setLanguage(newLanguage);
     if (newLanguage === 'web') {
@@ -317,18 +392,10 @@ export default function TestEditorPage() {
     setResponse(null);
   };
 
-
-
-  // ============ UI ============
-
-
-
-  // ถ้ายังไม่ Mount ไม่ต้อง render ปุ่ม (ป้องกันปุ่มกระพริบผิดสถานะ)
-
   return (
     <div className="min-h-screen bg-background relative">
 
-      {/* เรียกใช้ Modal Component */}
+      {/* Modal */}
       <ResultModal
         isOpen={showModal}
         onClose={() => setShowModal(false)}
@@ -336,6 +403,28 @@ export default function TestEditorPage() {
         message={response?.message}
         onNext={handleNext}
       />
+
+      {/* Read-Only Warning Modal */}
+      {showReadOnlyWarning && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50" onClick={() => setShowReadOnlyWarning(false)}>
+          <div className="bg-white dark:bg-gray-800 rounded-xl p-8 max-w-md mx-4 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <div className="text-center">
+              <div className="text-6xl mb-4">⚠️</div>
+              <h2 className="text-2xl font-bold text-gray-800 dark:text-gray-100 mb-3">ไม่สามารถแก้ไขโจทย์ได้</h2>
+              <p className="text-gray-600 dark:text-gray-300 mb-6">
+                คุณไม่สามารถแก้ไขหรือลบโค้ดที่เป็นส่วนของโจทย์ได้<br />
+                กรุณาเพิ่มโค้ดของคุณในช่องว่างที่เตรียมไว้ให้
+              </p>
+              <button
+                onClick={() => setShowReadOnlyWarning(false)}
+                className="px-8 py-3 bg-gradient-to-r from-teal-900 to-teal-500 text-white rounded-lg font-semibold hover:from-teal-800 hover:to-teal-400 transition-all shadow-md"
+              >
+                เข้าใจแล้ว
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Header */}
       <header className="bg-card border-b border-card px-6 py-4 flex items-center justify-between shadow-sm transition-colors">
@@ -362,7 +451,6 @@ export default function TestEditorPage() {
         </nav>
 
         <div className="flex items-center gap-4">
-          {/* Dark Mode Toggle */}
           {mounted && (
             <label className="relative inline-flex items-center cursor-pointer">
               <input
@@ -397,16 +485,14 @@ export default function TestEditorPage() {
         </div>
       </header>
 
-      {/* Main Content - 3 Columns */}
+      {/* Main Content */}
       <div className="grid grid-cols-12 gap-4 px-4 py-4" style={{ height: 'calc(100vh - 73px - 52px)' }}>
 
-        {/* Left Panel - โจทย์ */}
+        {/* Left Panel */}
         <div className="col-span-3 bg-card border border-card rounded-xl overflow-hidden shadow-sm flex flex-col transition-colors">
-
           <div className="sticky top-0 bg-gradient-to-b from-teal-900 to-teal-500 text-white px-6 py-4 font-bold text-center rounded-t-xl">
             📋 โจทย์
           </div>
-
           <div className="overflow-y-auto" style={{ maxHeight: 'calc(100vh - 73px - 52px - 60px)' }}>
             {isLoading ? (
               <div className="p-6 text-center text-gray-400">
@@ -415,11 +501,8 @@ export default function TestEditorPage() {
               </div>
             ) : (
               <div className="p-6">
-                {/* Challenge Info */}
                 <div className="mb-6">
                   <h2 className="text-xl font-bold text-gray-800 mb-3 ">{challengeData.title}</h2>
-
-                  {/* แสดงเงื่อนไข Syntax */}
                   {challengeData.validation_mode === 'syntax_check' && (
                     <div className="bg-gradient-to-r from-yellow-50 to-orange-50 border-l-4 border-yellow-400 rounded-r p-4 mb-4 shadow-sm">
                       <p className="text-sm font-bold text-yellow-800 mb-2 flex items-center gap-2">
@@ -452,7 +535,6 @@ export default function TestEditorPage() {
                       )}
                     </div>
                   )}
-
                   <div className="flex items-center gap-4 text-sm text-gray-600 mb-4">
                     <span className="flex items-center gap-1">
                       ❤️ <strong>{challengeData.likes}</strong>
@@ -461,11 +543,9 @@ export default function TestEditorPage() {
                       🏆 <strong>1</strong>
                     </span>
                   </div>
-
                   <button className="w-30 py-1 border-2 border-teal-600 text-teal-600 rounded-lg font-semibold hover:bg-teal-50 transition-colors mb-3">
                     + บันทึกโจทย์
                   </button>
-
                   <div className="flex items-center gap-1">
                     {[...Array(5)].map((_, i) => (
                       <span key={i} className={`text-xl ${i < challengeData.difficulty ? 'text-yellow-400' : 'text-gray-300'}`}>
@@ -475,8 +555,6 @@ export default function TestEditorPage() {
                     <span className="ml-2 text-sm text-gray-600">({challengeData.difficulty}/5)</span>
                   </div>
                 </div>
-
-                {/* คำอธิบาย */}
                 <div className="mb-6">
                   <h3 className="font-bold text-gray-800 mb-3 flex items-center gap-2">
                     <span className="text-lg">📝</span>
@@ -486,22 +564,18 @@ export default function TestEditorPage() {
                     {challengeData.description}
                   </div>
                 </div>
-
-                {/* Test Cases */}
                 {challengeData.testCases.map((testCase: any, index: number) => (
                   <div key={index} className="mb-6 bg-gradient-to-br from-blue-50 to-indigo-50 rounded-lg p-4 border border-blue-200">
                     <h3 className="font-bold text-blue-800 mb-3 flex items-center gap-2">
                       <span className="text-lg">🧪</span>
                       ตัวอย่าง {index + 1}
                     </h3>
-
                     <div className="mb-3">
                       <label className="text-xs text-blue-700 font-semibold mb-1 block">📥 ข้อมูลเข้า</label>
                       <div className="bg-white rounded p-3 text-sm text-gray-800 border border-blue-200 font-mono">
                         {testCase.input || 'ไม่มี'}
                       </div>
                     </div>
-
                     <div>
                       <label className="text-xs text-blue-700 font-semibold mb-1 block">📤 ข้อมูลออก</label>
                       <div className="bg-white rounded p-3 text-sm text-gray-800 border border-blue-200 font-mono">
@@ -517,8 +591,6 @@ export default function TestEditorPage() {
 
         {/* Middle Panel - Code Editor */}
         <div className="col-span-5 bg-white border border-gray-300 rounded-xl overflow-hidden shadow-sm flex flex-col relative z-20">
-
-          {/* ส่วน Header สีเขียว */}
           <div className="bg-gradient-to-b from-teal-900 to-teal-500 text-white px-6 py-2 flex items-center justify-center rounded-t-xl relative z-10">
             <CustomDropdown
               value={language}
@@ -527,35 +599,18 @@ export default function TestEditorPage() {
           </div>
 
           {language === 'web' ? (
-            <>
-              <WebEditor
-                onCodeChange={({ htmlCode: h, cssCode: c, jsCode: j }) => {
-                  setHtmlCode(h);
-                  setCssCode(c);
-                  setJsCode(j);
-                }}
-                onSubmit={handleSubmit}
-                isSubmitting={isSubmitting}
-                initialHtml={htmlCode}
-                initialCss={cssCode}
-                initialJs={jsCode}
-              />
-              <div className="border-t border-gray-200 p-4 flex gap-3 justify-end bg-white">
-                <button
-                  onClick={handleReboot}
-                  className="px-10 py-2.5 bg-gray-500 text-white rounded-lg font-semibold hover:bg-gray-600 transition-colors shadow-sm flex items-center gap-2"
-                >
-                  REBOOT
-                </button>
-                <button
-                  onClick={handleSubmit}
-                  disabled={isSubmitting}
-                  className="px-10 py-2.5 bg-gradient-to-b from-teal-900 to-teal-500 text-white rounded-lg font-semibold hover:from-teal-800 hover:to-teal-400 disabled:from-gray-400 disabled:to-gray-400 transition-all shadow-md flex items-center gap-2"
-                >
-                  {isSubmitting ? 'กำลังตรวจสอบ...' : 'SUBMIT'}
-                </button>
-              </div>
-            </>
+            <WebEditor
+              onCodeChange={({ htmlCode: h, cssCode: c, jsCode: j }: { htmlCode: string, cssCode: string, jsCode: string }) => {
+                setHtmlCode(h);
+                setCssCode(c);
+                setJsCode(j);
+              }}
+              onSubmit={handleSubmit}
+              isSubmitting={isSubmitting}
+              initialHtml={htmlCode}
+              initialCss={cssCode}
+              initialJs={jsCode}
+            />
           ) : (
             <>
               <div className="flex-1 overflow-hidden relative bg-gray-900">
@@ -565,20 +620,26 @@ export default function TestEditorPage() {
                     language={language}
                     onCodeChange={setCode}
                     height="100%"
+                    protectedRanges={protectedRanges}
+                    onReadOnlyWarning={() => setShowReadOnlyWarning(true)}
+                    errors={response?.syntaxErrors?.map((msg: string, i: number) => ({
+                      line: i + 1,
+                      message: msg
+                    })) || []}
                   />
                 </div>
               </div>
               <div className="border-t border-gray-200 p-4 flex gap-3 justify-end bg-white">
                 <button
                   onClick={handleReboot}
-                  className="px-10 py-2.5 bg-gray-500 text-white rounded-lg font-semibold hover:bg-gray-600 transition-colors shadow-sm flex items-center gap-2"
+                  className="px-10 py-2.5 bg-gray-500 text-white rounded-lg font-semibold hover:bg-gray-600 transition-colors shadow-sm"
                 >
                   REBOOT
                 </button>
                 <button
                   onClick={handleSubmit}
                   disabled={isSubmitting}
-                  className="px-10 py-2.5 bg-gradient-to-b from-teal-900 to-teal-500 text-white rounded-lg font-semibold hover:from-teal-800 hover:to-teal-400 disabled:from-gray-400 disabled:to-gray-400 transition-all shadow-md flex items-center gap-2"
+                  className="px-10 py-2.5 bg-gradient-to-b from-teal-900 to-teal-500 text-white rounded-lg font-semibold hover:from-teal-800 hover:to-teal-400 disabled:from-gray-400 disabled:to-gray-400 transition-all shadow-md"
                 >
                   {isSubmitting ? 'กำลังตรวจสอบ...' : 'SUBMIT'}
                 </button>
@@ -602,7 +663,6 @@ export default function TestEditorPage() {
               </div>
             ) : (
               <div className="space-y-4">
-                {/* สถานะ */}
                 <div className={`p-5 rounded-xl border-2 shadow-lg ${response.isCorrect
                   ? 'bg-gradient-to-br from-green-50 to-emerald-50 border-green-400'
                   : 'bg-gradient-to-br from-red-50 to-pink-50 border-red-400'
@@ -624,7 +684,21 @@ export default function TestEditorPage() {
                   </div>
                 </div>
 
-                {/* แสดง Syntax Errors */}
+                {response.isHardcoded && (
+                  <div className="bg-gradient-to-br from-yellow-50 to-orange-50 border-l-4 border-yellow-400 rounded-r p-4 shadow-md">
+                    <h3 className="font-bold text-yellow-800 mb-2 flex items-center gap-2">
+                      <span className="text-xl">🤔</span>
+                      คำแนะนำ
+                    </h3>
+                    <p className="text-sm text-yellow-900">
+                      ดูเหมือนว่าคุณอาจจะใส่ผลลัพธ์ลงไปในโค้ดโดยตรง (Hardcode)
+                      <br />
+                      เป้าหมายของโจทย์คือการเขียนโปรแกรมเพื่อสร้างผลลัพธ์นั้นขึ้นมา
+                      ลองใช้วิธีการแก้ปัญหาตามหลักการเขียนโปรแกรมดูนะครับ
+                    </p>
+                  </div>
+                )}
+
                 {response.syntaxErrors && response.syntaxErrors.length > 0 && (
                   <div className="bg-gradient-to-br from-yellow-50 to-orange-50 border-l-4 border-yellow-400 rounded-r p-4 shadow-md">
                     <h3 className="font-bold text-yellow-800 mb-3 flex items-center gap-2">
@@ -642,11 +716,9 @@ export default function TestEditorPage() {
                   </div>
                 )}
 
-                {/* Output */}
                 {response.actualOutput && (
                   <div>
                     <h3 className="font-bold mb-2 text-sm text-gray-700 flex items-center gap-2">
-
                       ผลลัพธ์ของคุณ:
                     </h3>
                     <div className="bg-gray-900 text-green-400 p-4 rounded-lg text-xs font-mono whitespace-pre-wrap border-2 border-gray-700 shadow-inner">
@@ -655,11 +727,9 @@ export default function TestEditorPage() {
                   </div>
                 )}
 
-                {/* Expected Output */}
                 {!response.isCorrect && response.expectedOutput && (
                   <div>
                     <h3 className="font-bold mb-2 text-sm text-blue-700 flex items-center gap-2">
-
                       ผลลัพธ์ที่คาดหวัง:
                     </h3>
                     <div className="bg-blue-50 border-2 border-blue-300 p-4 rounded-lg text-xs font-mono whitespace-pre-wrap shadow-sm">
@@ -668,7 +738,6 @@ export default function TestEditorPage() {
                   </div>
                 )}
 
-                {/* Execution Info */}
                 {response.executionTime && (
                   <div className="bg-gradient-to-br from-gray-50 to-slate-100 p-4 rounded-lg text-xs space-y-2 border border-gray-200 shadow-sm">
                     <div className="flex items-center justify-between">
@@ -692,18 +761,19 @@ export default function TestEditorPage() {
         <div className="flex-1 bg-gray-200 rounded-full h-3 overflow-hidden max-w-md shadow-inner">
           <div
             className="bg-gradient-to-r from-teal-900 to-teal-500 h-full transition-all duration-500 ease-out shadow-sm"
-            style={{ width: `${(currentTestCase / totalTestCases) * 100}%` }}
+            style={{ width: totalChallenges > 0 ? `${((currentChallengeIndex + 1) / totalChallenges) * 100}%` : '0%' }}
           />
         </div>
         <span className="text-sm text-gray-700 font-bold whitespace-nowrap min-w-[80px]">
-          {currentTestCase} / {totalTestCases}
+          {currentChallengeIndex + 1} / {totalChallenges}
         </span>
+
         <button
-          onClick={handleNext}
-          disabled={currentTestCase >= totalTestCases}
-          className="px-8 py-2 bg-gray-500 text-white rounded-lg font-semibold hover:bg-gray-600 gray-800 rounded-lg hover:from-gray-300 hover:to-gray-400 font-semibold disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-sm"
+          onClick={handleBack}
+          disabled={currentChallengeIndex <= 0}
+          className="px-8 py-2 bg-gray-500 text-white rounded-lg font-semibold hover:bg-gray-600 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-sm"
         >
-          ถัดไป →
+          ← กลับ
         </button>
       </div>
     </div>
