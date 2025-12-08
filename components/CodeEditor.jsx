@@ -147,9 +147,10 @@ export default function CodeEditor({
     editor.onDidChangeModelContent((e) => {
        // ถ้าเป็นการ Flush หรือ Remote Update (เช่น Reboot) ให้ข้ามการตรวจสอบ
        if (e.isFlush || isRemoteUpdate.current) {
-         isRemoteUpdate.current = false;
          return;
        }
+       
+       // Validate ทันที แต่ตรวจสอบ isRemoteUpdate อีกครั้งใน validateAndRevert
        validateAndRevert(e.changes);
     });
     
@@ -179,7 +180,8 @@ export default function CodeEditor({
 
   // ฟังก์ชันตรวจสอบและป้องกันการแก้ไข
   const validateAndRevert = (changes) => {
-    if (!editorRef.current || !monacoRef.current) return;
+    if (!editorRef.current || !monacoRef.current || isRemoteUpdate.current) return;
+    
     const editor = editorRef.current;
     const currentModel = editor.getModel();
     let shouldRevert = false;
@@ -194,11 +196,9 @@ export default function CodeEditor({
         // ถ้าเนื้อหาไม่ตรงกับต้นฉบับ
         if (currentContent !== originalContent) {
           // อนุญาตให้มี Newline ต่อท้ายได้ (กรณี Enter ที่ท้ายบรรทัด)
-          // ตรวจสอบว่าเนื้อหาเดิมยังอยู่ครบถ้วน และส่วนที่เกินมาเป็นแค่ Whitespace/Newline
           if (currentContent.startsWith(originalContent) && !originalContent.includes('\n')) {
              const diff = currentContent.substring(originalContent.length);
              if (!diff.trim()) {
-               // ถ้าส่วนที่เกินมาเป็นแค่ whitespace (เช่น \n) ถือว่ายอมรับได้
                return; 
              }
           }
@@ -269,16 +269,25 @@ export default function CodeEditor({
 
   // Effect สำหรับ Protected Ranges (ทำงานเมื่อ protectedRanges เปลี่ยน)
   useEffect(() => {
-    updateProtectedDecorations(protectedRanges);
-  }, [protectedRanges]); // REMOVED defaultCode dependency to fix infinite loop
+    if (editorRef.current && monacoRef.current) {
+      updateProtectedDecorations(protectedRanges);
+    }
+  }, [protectedRanges]);
 
-  // Effect to handle external code updates (e.g. Reboot)
+  // Effect to handle external code updates (e.g. Reboot or Challenge Change)
   useEffect(() => {
     if (editorRef.current && defaultCode !== editorRef.current.getValue()) {
+       // Mark as remote update BEFORE setting value to prevent validation
        isRemoteUpdate.current = true;
        editorRef.current.setValue(defaultCode);
-       // Re-apply decorations after reboot to ensure they are in correct positions
-       updateProtectedDecorations(protectedRanges);
+       
+       // ให้เวลา editor update ก่อนจะ apply decorations
+       setTimeout(() => {
+         if (protectedRanges.length > 0) {
+           updateProtectedDecorations(protectedRanges);
+         }
+         isRemoteUpdate.current = false;
+       }, 100);
     }
   }, [defaultCode]);
 
