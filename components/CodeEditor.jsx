@@ -1,16 +1,6 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef } from 'react';
 import Editor from '@monaco-editor/react';
 
-/**
- * @param {Object} props
- * @param {string} props.defaultCode
- * @param {string} props.language
- * @param {function} props.onCodeChange
- * @param {string} props.height
- * @param {any[]} [props.protectedRanges]
- * @param {function} [props.onReadOnlyWarning]
- * @param {any[]} [props.errors]
- */
 export default function CodeEditor({ 
   defaultCode, 
   language, 
@@ -26,13 +16,14 @@ export default function CodeEditor({
   const protectedDecorationsRef = useRef([]);
   const originalContentsRef = useRef([]);
   const isRemoteUpdate = useRef(false);
+  const updateTimeoutRef = useRef(null);
+  const isSettingValue = useRef(false);
 
   // เมื่อ Editor โหลดเสร็จ
   function handleEditorDidMount(editor, monaco) {
     editorRef.current = editor;
     monacoRef.current = monaco;
 
-    // ตั้งค่า Editor Options
     editor.updateOptions({
       fontSize: 14,
       minimap: { enabled: true },
@@ -47,7 +38,7 @@ export default function CodeEditor({
       glyphMargin: true,
     });
 
-    // เพิ่ม IntelliSense สำหรับ JavaScript/TypeScript
+    // IntelliSense สำหรับ JavaScript/TypeScript
     if (language === 'javascript' || language === 'typescript') {
       monaco.languages.typescript.javascriptDefaults.setDiagnosticsOptions({
         noSemanticValidation: false,
@@ -65,10 +56,10 @@ export default function CodeEditor({
       });
     }
 
-    // เพิ่ม IntelliSense สำหรับ Python
+    // IntelliSense สำหรับ Python
     if (language === 'python') {
       monaco.languages.registerCompletionItemProvider('python', {
-        provideCompletionItems: (model, position) => {
+        provideCompletionItems: () => {
           const suggestions = [
             {
               label: 'print',
@@ -111,7 +102,7 @@ export default function CodeEditor({
       });
     }
 
-    // เพิ่ม IntelliSense สำหรับ Java
+    // IntelliSense สำหรับ Java
     if (language === 'java') {
       monaco.languages.registerCompletionItemProvider('java', {
         provideCompletionItems: () => {
@@ -145,12 +136,9 @@ export default function CodeEditor({
 
     // Listen for changes
     editor.onDidChangeModelContent((e) => {
-       // ถ้าเป็นการ Flush หรือ Remote Update (เช่น Reboot) ให้ข้ามการตรวจสอบ
        if (e.isFlush || isRemoteUpdate.current) {
          return;
        }
-       
-       // Validate ทันที แต่ตรวจสอบ isRemoteUpdate อีกครั้งใน validateAndRevert
        validateAndRevert(e.changes);
     });
     
@@ -178,38 +166,36 @@ export default function CodeEditor({
     }
   }
 
-  // ฟังก์ชันตรวจสอบและป้องกันการแก้ไข
+  // ฟังก์ชันตรวจสอบและป้องกันการแก้ไข (อนุญาตให้เพิ่มโค้ดระหว่างบรรทัดได้)
   const validateAndRevert = (changes) => {
-    if (!editorRef.current || !monacoRef.current || isRemoteUpdate.current) return;
+     if (!editorRef.current || !monacoRef.current || isRemoteUpdate.current || isSettingValue.current) return;
     
     const editor = editorRef.current;
     const currentModel = editor.getModel();
     let shouldRevert = false;
 
-    // ตรวจสอบ Integrity
     protectedDecorationsRef.current.forEach((id, index) => {
       const range = currentModel.getDecorationRange(id);
       if (range) {
         const currentContent = currentModel.getValueInRange(range);
         const originalContent = originalContentsRef.current[index];
         
-        // ถ้าเนื้อหาไม่ตรงกับต้นฉบับ
         if (currentContent !== originalContent) {
-          // อนุญาตให้มี Newline ต่อท้ายได้ (กรณี Enter ที่ท้ายบรรทัด)
-          if (currentContent.startsWith(originalContent) && !originalContent.includes('\n')) {
-             const diff = currentContent.substring(originalContent.length);
-             if (!diff.trim()) {
-               return; 
-             }
-          }
+          // อนุญาตให้เพิ่มโค้ดต่อท้ายหรือแทรกระหว่างบรรทัด
+          // แต่ห้ามลบหรือแก้ไขโจทย์เดิม
           
-          shouldRevert = true;
+          // ตรวจสอบว่าโจทย์เดิมยังอยู่ครบหรือไม่
+          if (!currentContent.includes(originalContent)) {
+            // ถ้าโจทย์เดิมถูกลบหรือแก้ไข -> ห้าม
+            shouldRevert = true;
+          }
+          // ถ้าโจทย์เดิมยังอยู่ครบ แต่มีการเพิ่มโค้ด -> อนุญาต
         }
       }
     });
 
     if (shouldRevert) {
-      if (onReadOnlyWarning) onReadOnlyWarning();
+      // ป้องกันการแก้ไขโดยไม่แจ้งเตือน - แค่ revert เงียบๆ
       setTimeout(() => {
          editor.trigger('keyboard', 'undo', null);
       }, 0);
@@ -224,28 +210,25 @@ export default function CodeEditor({
     const editor = editorRef.current;
     const monaco = monacoRef.current;
     const model = editor.getModel();
+    if (!model) return;
 
-    // 1. ลบ Decorations เดิม
+    // ลบ Decorations เดิม
     if (protectedDecorationsRef.current.length > 0) {
       editor.deltaDecorations(protectedDecorationsRef.current, []);
       protectedDecorationsRef.current = [];
       originalContentsRef.current = [];
     }
 
-    // 2. สร้าง Decorations ใหม่
-    if (ranges.length > 0) {
-      console.log('Applying protected ranges:', ranges);
-      
+    // สร้าง Decorations ใหม่
+    if (ranges && ranges.length > 0) {
       const protectedDecorations = ranges.map(range => {
-        const maxCol = model.getLineMaxColumn(range.startLine);
+        const startLine = range.startLine;
+        const endLine = range.endLine;
+        const startCol = range.startColumn || 1;
+        const endCol = range.endColumn || model.getLineMaxColumn(endLine);
         
         return {
-          range: new monaco.Range(
-            range.startLine,
-            range.startColumn || 1,
-            range.endLine,
-            range.endColumn || maxCol
-          ),
+          range: new monaco.Range(startLine, startCol, endLine, endCol),
           options: {
             isWholeLine: false,
             className: 'protected-line-highlight',
@@ -262,34 +245,81 @@ export default function CodeEditor({
 
       originalContentsRef.current = decorationIds.map(id => {
         const range = model.getDecorationRange(id);
-        return model.getValueInRange(range);
+        return range ? model.getValueInRange(range) : '';
       });
     }
   };
 
-  // Effect สำหรับ Protected Ranges (ทำงานเมื่อ protectedRanges เปลี่ยน)
+  // Effect สำหรับ defaultCode เปลี่ยน (Reboot หรือเปลี่ยนโจทย์)
   useEffect(() => {
-    if (editorRef.current && monacoRef.current) {
-      updateProtectedDecorations(protectedRanges);
+    if (!editorRef.current) return;
+    
+    const currentValue = editorRef.current.getValue();
+    
+    // ตรวจสอบว่าโค้ดเปลี่ยนจริงหรือไม่
+    if (defaultCode !== currentValue) {
+      // ยกเลิก timeout เดิม
+      if (updateTimeoutRef.current) {
+        clearTimeout(updateTimeoutRef.current);
+      }
+      
+      // Set flags เพื่อบล็อคการ validate
+      isRemoteUpdate.current = true;
+      isSettingValue.current = true;
+      
+      // เคลียร์ decorations เดิม
+      if (protectedDecorationsRef.current.length > 0) {
+        editorRef.current.deltaDecorations(protectedDecorationsRef.current, []);
+        protectedDecorationsRef.current = [];
+        originalContentsRef.current = [];
+      }
+      
+      // Set โค้ดใหม่
+      editorRef.current.setValue(defaultCode);
+      
+      // ปลดล็อค isSettingValue ทันที
+      isSettingValue.current = false;
+      
+      // Apply decorations
+      requestAnimationFrame(() => {
+        if (protectedRanges && protectedRanges.length > 0) {
+          updateProtectedDecorations(protectedRanges);
+          
+           // รอให้ decorations ถูก apply จริงๆ (แต่ไม่เกิน 1 วินาที)
+          let attempts = 0;
+          const maxAttempts = 20; // 20 * 50ms = 1 วินาที
+          
+          const checkDecorations = () => {
+            attempts++;
+            
+            if (protectedDecorationsRef.current.length > 0) {
+              // Decorations พร้อมแล้ว ปลดล็อคได้
+              isRemoteUpdate.current = false;
+            } else if (attempts < maxAttempts) {
+              // ยังไม่พร้อย รออีก 50ms
+              setTimeout(checkDecorations, 50);
+            } else {
+              // เกิน timeout แล้ว บังคับปลดล็อค
+              console.warn('Decorations timeout - force unlock');
+              isRemoteUpdate.current = false;
+            }
+          };
+          
+          setTimeout(checkDecorations, 100);
+        } else {
+          // ไม่มี protected ranges ปลดล็อคเลย
+          isRemoteUpdate.current = false;
+        }
+      });
     }
-  }, [protectedRanges]);
-
-  // Effect to handle external code updates (e.g. Reboot or Challenge Change)
-  useEffect(() => {
-    if (editorRef.current && defaultCode !== editorRef.current.getValue()) {
-       // Mark as remote update BEFORE setting value to prevent validation
-       isRemoteUpdate.current = true;
-       editorRef.current.setValue(defaultCode);
-       
-       // ให้เวลา editor update ก่อนจะ apply decorations
-       setTimeout(() => {
-         if (protectedRanges.length > 0) {
-           updateProtectedDecorations(protectedRanges);
-         }
-         isRemoteUpdate.current = false;
-       }, 100);
-    }
-  }, [defaultCode]);
+    
+    // Cleanup
+    return () => {
+      if (updateTimeoutRef.current) {
+        clearTimeout(updateTimeoutRef.current);
+      }
+    };
+  }, [defaultCode, protectedRanges]);
 
   // จัดการ errors
   useEffect(() => {
@@ -325,61 +355,59 @@ export default function CodeEditor({
   }, [errors]);
 
   return (
-    <>
-      <Editor
-        height={height || '100%'}
-        language={language}
-        value={defaultCode}
-        theme="vs-dark"
-        onMount={handleEditorDidMount}
-        options={{
-          selectOnLineNumbers: true,
-          roundedSelection: false,
-          readOnly: false,
-          cursorStyle: 'line',
-          automaticLayout: true,
-          scrollbar: {
-            vertical: 'visible',
-            horizontal: 'visible',
-            useShadows: false,
-            verticalHasArrows: false,
-            horizontalHasArrows: false,
-            verticalScrollbarSize: 10,
-            horizontalScrollbarSize: 10,
-          },
-          minimap: {
-            enabled: true,
-            side: 'right',
-          },
-          fontSize: 14,
-          lineNumbers: 'on',
-          glyphMargin: true,
-          folding: true,
-          lineDecorationsWidth: 10,
-          lineNumbersMinChars: 3,
-          renderLineHighlight: 'all',
-          scrollBeyondLastLine: false,
-          wordWrap: 'on',
-          wrappingIndent: 'indent',
-          autoIndent: 'full',
-          formatOnPaste: true,
-          formatOnType: true,
-          suggestOnTriggerCharacters: true,
-          acceptSuggestionOnCommitCharacter: true,
-          acceptSuggestionOnEnter: 'on',
-          snippetSuggestions: 'top',
-          tabCompletion: 'on',
-          wordBasedSuggestions: true,
-          parameterHints: {
-            enabled: true,
-          },
-          tabSize: 2,
-          insertSpaces: true,
-          bracketPairColorization: {
-            enabled: true,
-          },
-        }}
-      />
-    </>
+    <Editor
+      height={height || '100%'}
+      language={language}
+      value={defaultCode}
+      theme="vs-dark"
+      onMount={handleEditorDidMount}
+      options={{
+        selectOnLineNumbers: true,
+        roundedSelection: false,
+        readOnly: false,
+        cursorStyle: 'line',
+        automaticLayout: true,
+        scrollbar: {
+          vertical: 'visible',
+          horizontal: 'visible',
+          useShadows: false,
+          verticalHasArrows: false,
+          horizontalHasArrows: false,
+          verticalScrollbarSize: 10,
+          horizontalScrollbarSize: 10,
+        },
+        minimap: {
+          enabled: true,
+          side: 'right',
+        },
+        fontSize: 14,
+        lineNumbers: 'on',
+        glyphMargin: true,
+        folding: true,
+        lineDecorationsWidth: 10,
+        lineNumbersMinChars: 3,
+        renderLineHighlight: 'all',
+        scrollBeyondLastLine: false,
+        wordWrap: 'on',
+        wrappingIndent: 'indent',
+        autoIndent: 'full',
+        formatOnPaste: true,
+        formatOnType: true,
+        suggestOnTriggerCharacters: true,
+        acceptSuggestionOnCommitCharacter: true,
+        acceptSuggestionOnEnter: 'on',
+        snippetSuggestions: 'top',
+        tabCompletion: 'on',
+        wordBasedSuggestions: true,
+        parameterHints: {
+          enabled: true,
+        },
+        tabSize: 2,
+        insertSpaces: true,
+        bracketPairColorization: {
+          enabled: true,
+        },
+      }}
+    />
   );
 }

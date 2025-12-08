@@ -362,21 +362,30 @@ export default function TestEditorPage() {
 
   const handleBack = () => {
     setShowModal(false);
+    setResponse(null);
+
     if (currentChallengeIndex > 0) {
       const newIndex = currentChallengeIndex - 1;
       setCurrentChallengeIndex(newIndex);
-      setChallengeId(challengeIds[newIndex]);
-      setResponse(null);
-    }
-  };
 
+      // Force update ใน next tick
+      setTimeout(() => {
+        setChallengeId(challengeIds[newIndex]);
+      }, 0);
+    }
+  }
   const handleNext = () => {
     setShowModal(false);
+    setResponse(null);
+
     if (currentChallengeIndex < totalChallenges - 1) {
       const newIndex = currentChallengeIndex + 1;
       setCurrentChallengeIndex(newIndex);
-      setChallengeId(challengeIds[newIndex]);
-      setResponse(null);
+
+      // Force update ใน next tick
+      setTimeout(() => {
+        setChallengeId(challengeIds[newIndex]);
+      }, 0);
     }
   };
 
@@ -616,6 +625,7 @@ export default function TestEditorPage() {
               <div className="flex-1 overflow-hidden relative bg-gray-900">
                 <div className="absolute inset-0">
                   <CodeEditor
+                    key={challengeId}
                     defaultCode={code}
                     language={language}
                     onCodeChange={setCode}
