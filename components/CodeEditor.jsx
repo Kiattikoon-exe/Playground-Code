@@ -134,12 +134,52 @@ export default function CodeEditor({
       });
     }
 
-    // Listen for changes
+    // Listen for changes และป้องกันการแก้ไข protected ranges
     editor.onDidChangeModelContent((e) => {
-       if (e.isFlush || isRemoteUpdate.current) {
+       if (e.isFlush || isRemoteUpdate.current || isSettingValue.current) {
          return;
        }
-       validateAndRevert(e.changes);
+       
+       // ตรวจสอบว่ามี change ที่ทับกับ protected range หรือไม่
+       const hasProtectedChange = e.changes.some(change => {
+         const model = editor.getModel();
+         
+         for (const decorationId of protectedDecorationsRef.current) {
+           const protectedRange = model.getDecorationRange(decorationId);
+           if (!protectedRange) continue;
+           
+           const changeRange = change.range;
+           
+           // ตรวจสอบว่า change อยู่ในบรรทัดที่ protected หรือไม่
+           const changeStartLine = changeRange.startLineNumber;
+           const changeEndLine = changeRange.endLineNumber;
+           const protectedStartLine = protectedRange.startLineNumber;
+           const protectedEndLine = protectedRange.endLineNumber;
+           
+           // ถ้า change อยู่ในช่วงบรรทัดที่ protected ถือว่า overlap
+           const overlaps = !(
+             changeEndLine < protectedStartLine ||
+             changeStartLine > protectedEndLine
+           );
+           
+           if (overlaps) return true;
+         }
+         return false;
+       });
+
+       if (hasProtectedChange) {
+         // Block ด้วยการ undo แบบไม่ trigger event ซ้ำ
+         isRemoteUpdate.current = true;
+         requestAnimationFrame(() => {
+           editor.trigger('protected', 'undo', null);
+           requestAnimationFrame(() => {
+             isRemoteUpdate.current = false;
+           });
+         });
+       } else if (onCodeChange) {
+         // ไม่มีการแก้ไข protected range
+         onCodeChange(editor.getValue());
+       }
     });
     
     // เพิ่ม CSS
@@ -166,44 +206,6 @@ export default function CodeEditor({
     }
   }
 
-  // ฟังก์ชันตรวจสอบและป้องกันการแก้ไข (อนุญาตให้เพิ่มโค้ดระหว่างบรรทัดได้)
-  const validateAndRevert = (changes) => {
-     if (!editorRef.current || !monacoRef.current || isRemoteUpdate.current || isSettingValue.current) return;
-    
-    const editor = editorRef.current;
-    const currentModel = editor.getModel();
-    let shouldRevert = false;
-
-    protectedDecorationsRef.current.forEach((id, index) => {
-      const range = currentModel.getDecorationRange(id);
-      if (range) {
-        const currentContent = currentModel.getValueInRange(range);
-        const originalContent = originalContentsRef.current[index];
-        
-        if (currentContent !== originalContent) {
-          // อนุญาตให้เพิ่มโค้ดต่อท้ายหรือแทรกระหว่างบรรทัด
-          // แต่ห้ามลบหรือแก้ไขโจทย์เดิม
-          
-          // ตรวจสอบว่าโจทย์เดิมยังอยู่ครบหรือไม่
-          if (!currentContent.includes(originalContent)) {
-            // ถ้าโจทย์เดิมถูกลบหรือแก้ไข -> ห้าม
-            shouldRevert = true;
-          }
-          // ถ้าโจทย์เดิมยังอยู่ครบ แต่มีการเพิ่มโค้ด -> อนุญาต
-        }
-      }
-    });
-
-    if (shouldRevert) {
-      // ป้องกันการแก้ไขโดยไม่แจ้งเตือน - แค่ revert เงียบๆ
-      setTimeout(() => {
-         editor.trigger('keyboard', 'undo', null);
-      }, 0);
-    } else {
-       if (onCodeChange) onCodeChange(editor.getValue());
-    }
-  };
-
   // Helper function to update protected decorations
   const updateProtectedDecorations = (ranges) => {
     if (!editorRef.current || !monacoRef.current) return;
@@ -224,13 +226,11 @@ export default function CodeEditor({
       const protectedDecorations = ranges.map(range => {
         const startLine = range.startLine;
         const endLine = range.endLine;
-        const startCol = range.startColumn || 1;
-        const endCol = range.endColumn || model.getLineMaxColumn(endLine);
         
         return {
-          range: new monaco.Range(startLine, startCol, endLine, endCol),
+          range: new monaco.Range(startLine, 1, endLine, Number.MAX_SAFE_INTEGER),
           options: {
-            isWholeLine: false,
+            isWholeLine: true,
             className: 'protected-line-highlight',
             glyphMarginClassName: 'protected-line-glyph',
             linesDecorationsClassName: 'protected-line-decoration',
@@ -253,45 +253,45 @@ export default function CodeEditor({
   // Effect สำหรับ defaultCode เปลี่ยน (Reboot หรือเปลี่ยนโจทย์)
   useEffect(() => {
     if (!editorRef.current) return;
-    
+
     const currentValue = editorRef.current.getValue();
-    
+
     // ตรวจสอบว่าโค้ดเปลี่ยนจริงหรือไม่
     if (defaultCode !== currentValue) {
       // ยกเลิก timeout เดิม
       if (updateTimeoutRef.current) {
         clearTimeout(updateTimeoutRef.current);
       }
-      
+
       // Set flags เพื่อบล็อคการ validate
       isRemoteUpdate.current = true;
       isSettingValue.current = true;
-      
+
       // เคลียร์ decorations เดิม
       if (protectedDecorationsRef.current.length > 0) {
         editorRef.current.deltaDecorations(protectedDecorationsRef.current, []);
         protectedDecorationsRef.current = [];
         originalContentsRef.current = [];
       }
-      
+
       // Set โค้ดใหม่
       editorRef.current.setValue(defaultCode);
-      
+
       // ปลดล็อค isSettingValue ทันที
       isSettingValue.current = false;
-      
-      // Apply decorations
-      requestAnimationFrame(() => {
+
+      // Apply decorations หลังจาก set value เสร็จ
+      const applyDecorations = () => {
         if (protectedRanges && protectedRanges.length > 0) {
           updateProtectedDecorations(protectedRanges);
-          
-           // รอให้ decorations ถูก apply จริงๆ (แต่ไม่เกิน 1 วินาที)
+
+          // รอให้ decorations ถูก apply จริงๆ (แต่ไม่เกิน 1 วินาที)
           let attempts = 0;
           const maxAttempts = 20; // 20 * 50ms = 1 วินาที
-          
+
           const checkDecorations = () => {
             attempts++;
-            
+
             if (protectedDecorationsRef.current.length > 0) {
               // Decorations พร้อมแล้ว ปลดล็อคได้
               isRemoteUpdate.current = false;
@@ -304,22 +304,47 @@ export default function CodeEditor({
               isRemoteUpdate.current = false;
             }
           };
-          
+
           setTimeout(checkDecorations, 100);
         } else {
           // ไม่มี protected ranges ปลดล็อคเลย
           isRemoteUpdate.current = false;
         }
-      });
+      };
+
+      // ใช้ setTimeout เพื่อให้ setValue เสร็จก่อน
+      setTimeout(applyDecorations, 10);
     }
-    
+
     // Cleanup
     return () => {
       if (updateTimeoutRef.current) {
         clearTimeout(updateTimeoutRef.current);
       }
     };
-  }, [defaultCode, protectedRanges]);
+  }, [defaultCode]);
+
+  // Effect แยกสำหรับ protectedRanges เปลี่ยน
+  useEffect(() => {
+    if (!editorRef.current || !monacoRef.current) return;
+    
+    // Re-apply decorations เมื่อ protectedRanges เปลี่ยน
+    if (protectedRanges && protectedRanges.length > 0) {
+      isRemoteUpdate.current = true;
+      updateProtectedDecorations(protectedRanges);
+      
+      setTimeout(() => {
+        isRemoteUpdate.current = false;
+      }, 100);
+    } else {
+      // ถ้าไม่มี protected ranges ให้ลบ decorations ทั้งหมด
+      if (protectedDecorationsRef.current.length > 0) {
+        editorRef.current.deltaDecorations(protectedDecorationsRef.current, []);
+        protectedDecorationsRef.current = [];
+        originalContentsRef.current = [];
+      }
+    }
+  }, [protectedRanges]);
 
   // จัดการ errors
   useEffect(() => {
