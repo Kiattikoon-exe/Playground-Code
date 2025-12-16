@@ -16,7 +16,6 @@ export default function CodeEditor({
   const protectedDecorationsRef = useRef([]);
   const originalContentsRef = useRef([]);
   const isRemoteUpdate = useRef(false);
-  const updateTimeoutRef = useRef(null);
   const isSettingValue = useRef(false);
 
   // เมื่อ Editor โหลดเสร็จ
@@ -30,107 +29,21 @@ export default function CodeEditor({
       scrollBeyondLastLine: false,
       wordWrap: 'on',
       automaticLayout: true,
-      suggestOnTriggerCharacters: true,
-      quickSuggestions: true,
       tabSize: 2,
       formatOnPaste: true,
       formatOnType: true,
       glyphMargin: true,
     });
 
-    // IntelliSense สำหรับ JavaScript/TypeScript
-    if (language === 'javascript' || language === 'typescript') {
+    // Disable TypeScript validation for non-TS/JS languages
+    if (language !== 'javascript' && language !== 'typescript') {
       monaco.languages.typescript.javascriptDefaults.setDiagnosticsOptions({
-        noSemanticValidation: false,
-        noSyntaxValidation: false,
+        noSemanticValidation: true,
+        noSyntaxValidation: true,
       });
-
-      monaco.languages.typescript.javascriptDefaults.setCompilerOptions({
-        target: monaco.languages.typescript.ScriptTarget.ES2020,
-        allowNonTsExtensions: true,
-        moduleResolution: monaco.languages.typescript.ModuleResolutionKind.NodeJs,
-        module: monaco.languages.typescript.ModuleKind.CommonJS,
-        noEmit: true,
-        esModuleInterop: true,
-        allowJs: true,
-      });
-    }
-
-    // IntelliSense สำหรับ Python
-    if (language === 'python') {
-      monaco.languages.registerCompletionItemProvider('python', {
-        provideCompletionItems: () => {
-          const suggestions = [
-            {
-              label: 'print',
-              kind: monaco.languages.CompletionItemKind.Function,
-              insertText: 'print(${1:value})',
-              insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
-              documentation: 'Print to console',
-            },
-            {
-              label: 'def',
-              kind: monaco.languages.CompletionItemKind.Keyword,
-              insertText: 'def ${1:function_name}(${2:params}):\n\t${3:pass}',
-              insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
-              documentation: 'Define a function',
-            },
-            {
-              label: 'class',
-              kind: monaco.languages.CompletionItemKind.Keyword,
-              insertText: 'class ${1:ClassName}:\n\tdef __init__(self${2:, params}):\n\t\t${3:pass}',
-              insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
-              documentation: 'Define a class',
-            },
-            {
-              label: 'if',
-              kind: monaco.languages.CompletionItemKind.Keyword,
-              insertText: 'if ${1:condition}:\n\t${2:pass}',
-              insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
-              documentation: 'If statement',
-            },
-            {
-              label: 'for',
-              kind: monaco.languages.CompletionItemKind.Keyword,
-              insertText: 'for ${1:item} in ${2:iterable}:\n\t${3:pass}',
-              insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
-              documentation: 'For loop',
-            },
-          ];
-          return { suggestions };
-        },
-      });
-    }
-
-    // IntelliSense สำหรับ Java
-    if (language === 'java') {
-      monaco.languages.registerCompletionItemProvider('java', {
-        provideCompletionItems: () => {
-          const suggestions = [
-            {
-              label: 'sout',
-              kind: monaco.languages.CompletionItemKind.Snippet,
-              insertText: 'System.out.println(${1:value});',
-              insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
-              documentation: 'Print to console',
-            },
-            {
-              label: 'psvm',
-              kind: monaco.languages.CompletionItemKind.Snippet,
-              insertText: 'public static void main(String[] args) {\n\t${1}\n}',
-              insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
-              documentation: 'Main method',
-            },
-            {
-              label: 'class',
-              kind: monaco.languages.CompletionItemKind.Keyword,
-              insertText: 'public class ${1:ClassName} {\n\t${2}\n}',
-              insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
-              documentation: 'Class definition',
-            },
-          ];
-          return { suggestions };
-        },
+      monaco.languages.typescript.typescriptDefaults.setDiagnosticsOptions({
+        noSemanticValidation: true,
+        noSyntaxValidation: true,
       });
     }
 
@@ -168,7 +81,7 @@ export default function CodeEditor({
        });
 
        if (hasProtectedChange) {
-         // Block ด้วยการ undo แบบไม่ trigger event ซ้ำ
+         // Block ด้วยการ undo
          isRemoteUpdate.current = true;
          requestAnimationFrame(() => {
            editor.trigger('protected', 'undo', null);
@@ -176,32 +89,33 @@ export default function CodeEditor({
              isRemoteUpdate.current = false;
            });
          });
+         
+         // แสดง warning
+         if (onReadOnlyWarning) {
+           onReadOnlyWarning();
+         }
        } else if (onCodeChange) {
          // ไม่มีการแก้ไข protected range
          onCodeChange(editor.getValue());
        }
     });
     
-    // เพิ่ม CSS
-    const style = document.createElement('style');
-    style.innerHTML = `
-      .protected-line-highlight {
-        background: linear-gradient(90deg, rgba(255, 215, 0, 0.15) 0%, rgba(255, 215, 0, 0.05) 100%) !important;
-        border-left: 3px solid #ffd700;
-      }
-      .protected-line-glyph {
-        background: linear-gradient(135deg, #ffd700 0%, #ffed4e 100%);
-        width: 4px !important;
-        margin-left: 3px;
-        border-radius: 2px;
-      }
-      .protected-line-decoration {
-        background-color: #ffd700;
-        width: 5px !important;
-      }
-    `;
+    // เพิ่ม CSS สำหรับ protected lines
     if (!document.getElementById('protected-lines-style')) {
+      const style = document.createElement('style');
       style.id = 'protected-lines-style';
+      style.innerHTML = `
+        .protected-line-highlight {
+          background: linear-gradient(90deg, rgba(255, 215, 0, 0.15) 0%, rgba(255, 215, 0, 0.05) 100%) !important;
+          border-left: 3px solid #ffd700;
+        }
+        .protected-line-glyph {
+          background: linear-gradient(135deg, #ffd700 0%, #ffed4e 100%);
+          width: 4px !important;
+          margin-left: 3px;
+          border-radius: 2px;
+        }
+      `;
       document.head.appendChild(style);
     }
   }
@@ -233,9 +147,8 @@ export default function CodeEditor({
             isWholeLine: true,
             className: 'protected-line-highlight',
             glyphMarginClassName: 'protected-line-glyph',
-            linesDecorationsClassName: 'protected-line-decoration',
             stickiness: monaco.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges,
-            hoverMessage: { value: '🔒 ส่วนนี้เป็นโจทย์ ห้ามแก้ไข' }
+            hoverMessage: { value: '🔒 Protected code - Do not edit' }
           }
         };
       });
@@ -258,11 +171,6 @@ export default function CodeEditor({
 
     // ตรวจสอบว่าโค้ดเปลี่ยนจริงหรือไม่
     if (defaultCode !== currentValue) {
-      // ยกเลิก timeout เดิม
-      if (updateTimeoutRef.current) {
-        clearTimeout(updateTimeoutRef.current);
-      }
-
       // Set flags เพื่อบล็อคการ validate
       isRemoteUpdate.current = true;
       isSettingValue.current = true;
@@ -281,54 +189,38 @@ export default function CodeEditor({
       isSettingValue.current = false;
 
       // Apply decorations หลังจาก set value เสร็จ
-      const applyDecorations = () => {
+      setTimeout(() => {
         if (protectedRanges && protectedRanges.length > 0) {
           updateProtectedDecorations(protectedRanges);
-
-          // รอให้ decorations ถูก apply จริงๆ (แต่ไม่เกิน 1 วินาที)
+          
+          // รอให้ decorations ถูก apply
           let attempts = 0;
-          const maxAttempts = 20; // 20 * 50ms = 1 วินาที
+          const maxAttempts = 20;
 
           const checkDecorations = () => {
             attempts++;
 
             if (protectedDecorationsRef.current.length > 0) {
-              // Decorations พร้อมแล้ว ปลดล็อคได้
               isRemoteUpdate.current = false;
             } else if (attempts < maxAttempts) {
-              // ยังไม่พร้อย รออีก 50ms
               setTimeout(checkDecorations, 50);
             } else {
-              // เกิน timeout แล้ว บังคับปลดล็อค
-              console.warn('Decorations timeout - force unlock');
               isRemoteUpdate.current = false;
             }
           };
 
           setTimeout(checkDecorations, 100);
         } else {
-          // ไม่มี protected ranges ปลดล็อคเลย
           isRemoteUpdate.current = false;
         }
-      };
-
-      // ใช้ setTimeout เพื่อให้ setValue เสร็จก่อน
-      setTimeout(applyDecorations, 10);
+      }, 10);
     }
-
-    // Cleanup
-    return () => {
-      if (updateTimeoutRef.current) {
-        clearTimeout(updateTimeoutRef.current);
-      }
-    };
   }, [defaultCode]);
 
-  // Effect แยกสำหรับ protectedRanges เปลี่ยน
+  // Effect สำหรับ protectedRanges เปลี่ยน
   useEffect(() => {
     if (!editorRef.current || !monacoRef.current) return;
     
-    // Re-apply decorations เมื่อ protectedRanges เปลี่ยน
     if (protectedRanges && protectedRanges.length > 0) {
       isRemoteUpdate.current = true;
       updateProtectedDecorations(protectedRanges);
@@ -337,7 +229,7 @@ export default function CodeEditor({
         isRemoteUpdate.current = false;
       }, 100);
     } else {
-      // ถ้าไม่มี protected ranges ให้ลบ decorations ทั้งหมด
+      // ลบ decorations ทั้งหมด
       if (protectedDecorationsRef.current.length > 0) {
         editorRef.current.deltaDecorations(protectedDecorationsRef.current, []);
         protectedDecorationsRef.current = [];
@@ -388,16 +280,12 @@ export default function CodeEditor({
       onMount={handleEditorDidMount}
       options={{
         selectOnLineNumbers: true,
-        roundedSelection: false,
         readOnly: false,
-        cursorStyle: 'line',
         automaticLayout: true,
         scrollbar: {
           vertical: 'visible',
           horizontal: 'visible',
           useShadows: false,
-          verticalHasArrows: false,
-          horizontalHasArrows: false,
           verticalScrollbarSize: 10,
           horizontalScrollbarSize: 10,
         },
@@ -409,24 +297,12 @@ export default function CodeEditor({
         lineNumbers: 'on',
         glyphMargin: true,
         folding: true,
-        lineDecorationsWidth: 10,
-        lineNumbersMinChars: 3,
         renderLineHighlight: 'all',
         scrollBeyondLastLine: false,
         wordWrap: 'on',
-        wrappingIndent: 'indent',
         autoIndent: 'full',
         formatOnPaste: true,
         formatOnType: true,
-        suggestOnTriggerCharacters: true,
-        acceptSuggestionOnCommitCharacter: true,
-        acceptSuggestionOnEnter: 'on',
-        snippetSuggestions: 'top',
-        tabCompletion: 'on',
-        wordBasedSuggestions: true,
-        parameterHints: {
-          enabled: true,
-        },
         tabSize: 2,
         insertSpaces: true,
         bracketPairColorization: {
