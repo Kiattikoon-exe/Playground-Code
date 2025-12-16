@@ -18,6 +18,7 @@ export interface CodeEditorProps {
   onCodeChange?: (code: string) => void;
   height?: string | number;
   protectedRanges?: ProtectedRange[];
+  onReadOnlyWarning?: () => void;
   errors?: EditorError[];
 }
 
