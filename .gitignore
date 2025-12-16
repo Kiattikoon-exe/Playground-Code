@@ -36,6 +36,11 @@ yarn-error.log*
 # vercel
 .vercel
 
+# database documentation (local only)
+database/*.sql
+database/*.md
+!database/README.md
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts
