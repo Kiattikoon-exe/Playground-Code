@@ -147,6 +147,209 @@ function getSyntaxPattern(keyword, language) {
 }
 
 // ========================================
+// ฟังก์ชันสำหรับ Function Testing Mode (Codewars Style)
+// ========================================
+// ใน check-answer/route.js
+// แทนที่ฟังก์ชัน handleFunctionTest เดิม
+
+async function handleFunctionTest(userCode, language, challengeData) {
+  const testScript = challengeData.validation_script;
+  
+  if (!testScript) {
+    return NextResponse.json({
+      isCorrect: false,
+      message: "โจทย์นี้ยังไม่มี test script",
+      timestamp: new Date().toISOString(),
+    });
+  }
+
+  try {
+    let fullCode, paizaLang;
+
+    // ========================================
+    // Python - ใช้งานได้แล้ว
+    // ========================================
+    if (language === "python") {
+      paizaLang = "python3";
+      
+      fullCode = `${userCode}
+
+# Test Script
+${testScript}`;
+    }
+
+    // ========================================
+    // JavaScript - ใช้งานได้แล้ว
+    // ========================================
+    else if (language === "javascript") {
+      paizaLang = "javascript";
+      
+      fullCode = `${userCode}
+
+// Test Script
+${testScript}`;
+    }
+
+    // ========================================
+    // Java - แก้ไขให้ถูกต้อง
+    // ========================================
+    else if (language === "java") {
+      paizaLang = "java";
+      
+      // ✅ รวม User Code (Solution class) กับ Test (Main class)
+      fullCode = `${userCode}
+
+${testScript}`;
+    }
+
+    // ========================================
+    // C++ - แก้ไขให้ถูกต้อง
+    // ========================================
+    else if (language === "cpp") {
+      paizaLang = "cpp";
+      
+      // ✅ รวม User Code (function) กับ Test (main)
+      fullCode = `${userCode}
+
+${testScript}`;
+    }
+
+    else {
+      return NextResponse.json({
+        isCorrect: false,
+        message: `ภาษา ${language} ยังไม่รองรับโหมด function_test`,
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    console.log("=== Full Code to Execute ===");
+    console.log(fullCode);
+    console.log("=== End Code ===");
+
+    // ========================================
+    // ส่งไปรันที่ Paiza.IO
+    // ========================================
+    const createResponse = await fetch("https://api.paiza.io/runners/create", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        source_code: fullCode,
+        language: paizaLang,
+        input: "",
+        api_key: process.env.PAIZA_API_KEY || "guest",
+      }),
+    });
+
+    const createResult = await createResponse.json();
+    
+    if (createResult.error) {
+      throw new Error(`Paiza API Error: ${createResult.error}`);
+    }
+    
+    if (!createResult.id) {
+      throw new Error(`Paiza API Error: No submission ID returned`);
+    }
+    
+    const submissionId = createResult.id;
+    console.log("Function Test Submission ID:", submissionId);
+
+    // รอผลลัพธ์
+    let result;
+    let attempts = 0;
+    const maxAttempts = 30;
+
+    while (attempts < maxAttempts) {
+      await sleep(1000);
+      
+      const statusUrl = `https://api.paiza.io/runners/get_details?id=${submissionId}&api_key=${
+        process.env.PAIZA_API_KEY || "guest"
+      }`;
+      const detailsResponse = await fetch(statusUrl);
+      result = await detailsResponse.json();
+
+      console.log(`Function Test Attempt ${attempts + 1}: Status = ${result.status}`);
+
+      if (result.status === "completed") break;
+      attempts++;
+    }
+
+    if (attempts >= maxAttempts) {
+      return NextResponse.json({
+        isCorrect: false,
+        message: "โค้ดใช้เวลารันนานเกินไป",
+        details: "Timeout after 30 seconds",
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    console.log("=== Execution Result ===");
+    console.log("stdout:", result.stdout);
+    console.log("stderr:", result.stderr);
+    console.log("build_stderr:", result.build_stderr);
+
+    // ========================================
+    // ตรวจสอบผลลัพธ์
+    // ========================================
+    if (result.build_result === "failure") {
+      return NextResponse.json({
+        isCorrect: false,
+        message: "โค้ดมีข้อผิดพลาด Syntax",
+        details: result.build_stderr || result.stderr || "Compilation failed",
+        actualOutput: result.stdout || "",
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    const output = (result.stdout || "").trim();
+    
+    // พยายาม parse JSON ถ้าเป็นผลลัพธ์จาก test script
+    let testResults = [];
+    let allPassed = false;
+    let passedCount = 0;
+    
+    try {
+      // ลอง parse JSON
+      testResults = JSON.parse(output);
+      allPassed = testResults.every(t => t.passed === true);
+      passedCount = testResults.filter(t => t.passed === true).length;
+    } catch (e) {
+      // ถ้า parse ไม่ได้ แสดงว่าอาจมีปัญหา
+      console.error("Failed to parse test results as JSON:", e);
+      return NextResponse.json({
+        isCorrect: false,
+        message: "ไม่สามารถแปลงผลลัพธ์ได้ - กรุณาตรวจสอบโค้ด",
+        details: output,
+        actualOutput: output,
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    return NextResponse.json({
+      isCorrect: allPassed,
+      message: allPassed 
+        ? `✅ ผ่านทุก test case! (${passedCount}/${testResults.length})` 
+        : `❌ ผ่าน ${passedCount}/${testResults.length} test cases`,
+      testResults: testResults,
+      actualOutput: output,
+      executionTime: result.time || "N/A",
+      challengeId: challengeData.id,
+      timestamp: new Date().toISOString(),
+    });
+
+  } catch (error) {
+    console.error("Function Test Error:", error);
+    return NextResponse.json({
+      isCorrect: false,
+      message: "เกิดข้อผิดพลาด: " + error.message,
+      error: error.message,
+      timestamp: new Date().toISOString(),
+    }, { status: 500 });
+  }
+}
+
+// const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// ========================================
 // POST Handler
 // ========================================
 export async function POST(request) {
@@ -184,6 +387,14 @@ export async function POST(request) {
         },
         { status: 404 }
       );
+    }
+
+    // ========================================
+    // BRANCH 0: Function Testing Mode (Codewars Style)
+    // ========================================
+    if (challengeData.validation_mode === "function_test") {
+      console.log("=== Function Test Mode ===");
+      return await handleFunctionTest(answer, language, challengeData);
     }
 
     // ========================================

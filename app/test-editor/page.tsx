@@ -647,6 +647,13 @@ export default function TestEditorPage() {
                   REBOOT
                 </button>
                 <button
+                  onClick={handleNext}
+                  disabled={currentChallengeIndex >= totalChallenges - 1}
+                  className="px-10 py-2.5 bg-yellow-500 text-white rounded-lg font-semibold hover:bg-yellow-600 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors shadow-sm"
+                >
+                  SKIP →
+                </button>
+                <button
                   onClick={handleSubmit}
                   disabled={isSubmitting}
                   className="px-10 py-2.5 bg-gradient-to-b from-teal-900 to-teal-500 text-white rounded-lg font-semibold hover:from-teal-800 hover:to-teal-400 disabled:from-gray-400 disabled:to-gray-400 transition-all shadow-md"
