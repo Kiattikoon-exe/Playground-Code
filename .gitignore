@@ -44,3 +44,4 @@ database/*.md
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+.agent/
