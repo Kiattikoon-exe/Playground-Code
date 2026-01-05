@@ -1,29 +1,22 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
-// แมปภาษาทั้งหมดที่ Paiza.IO รองรับ
+// ========================================
+// Judge0 Language ID Mapping
+// ========================================
 const LANGUAGE_MAP = {
-  javascript: "javascript",
-  python: "python3",
-  java: "java",
-  cpp: "cpp",
-  c: "c",
-  typescript: "typescript",
-  php: "php",
-  rust: "rust",
-  go: "go",
-  swift: "swift",
-  kotlin: "kotlin",
-  csharp: "csharp",
-  scala: "scala",
-  ruby: "ruby",
-  perl: "perl",
-  bash: "bash",
-  r: "r",
-  sql: "mysql",
-  web: "web",
+  javascript: 63,  
+  python: 71,     
+  java: 62,       
+  cpp: 54,         
+  c: 50,           
+  typescript: 74,  
+  php: 68,        
+  rust: 73,        
+  go: 60,         
+  ruby: 72,        
+  bash: 46,       
+  csharp: 51,      
 };
 
 // ========================================
@@ -164,56 +157,37 @@ async function handleFunctionTest(userCode, language, challengeData) {
   }
 
   try {
-    let fullCode, paizaLang;
+    let fullCode, languageId;
 
     // ========================================
-    // Python - ใช้งานได้แล้ว
+    // กำหนด Language ID และรวมโค้ด
     // ========================================
     if (language === "python") {
-      paizaLang = "python3";
-      
+      languageId = 71; // Python 3.8.1
       fullCode = `${userCode}
 
 # Test Script
 ${testScript}`;
     }
-
-    // ========================================
-    // JavaScript - ใช้งานได้แล้ว
-    // ========================================
     else if (language === "javascript") {
-      paizaLang = "javascript";
-      
+      languageId = 63; // JavaScript (Node.js 12.14.0)
       fullCode = `${userCode}
 
 // Test Script
-${testScript}`;
+      ${testScript}`;
     }
-
-    // ========================================
-    // Java - แก้ไขให้ถูกต้อง
-    // ========================================
     else if (language === "java") {
-      paizaLang = "java";
-      
-      // ✅ รวม User Code (Solution class) กับ Test (Main class)
+      languageId = 62; // Java (OpenJDK 13.0.1)
       fullCode = `${userCode}
 
-${testScript}`;
+      ${testScript}`;
     }
-
-    // ========================================
-    // C++ - แก้ไขให้ถูกต้อง
-    // ========================================
     else if (language === "cpp") {
-      paizaLang = "cpp";
-      
-      // ✅ รวม User Code (function) กับ Test (main)
+      languageId = 54; // ✅ แก้ไข: C++ (GCC 9.2.0)
       fullCode = `${userCode}
 
 ${testScript}`;
     }
-
     else {
       return NextResponse.json({
         isCorrect: false,
@@ -227,93 +201,91 @@ ${testScript}`;
     console.log("=== End Code ===");
 
     // ========================================
-    // ส่งไปรันที่ Paiza.IO
+    // ส่งไปรันที่ Judge0 (ใช้ wait=true ไม่ต้อง polling)
     // ========================================
-    const createResponse = await fetch("https://api.paiza.io/runners/create", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        source_code: fullCode,
-        language: paizaLang,
-        input: "",
-        api_key: process.env.PAIZA_API_KEY || "guest",
-      }),
-    });
-
-    const createResult = await createResponse.json();
+    console.log(`Sending to Judge0 - Language ID: ${languageId}`);
     
-    if (createResult.error) {
-      throw new Error(`Paiza API Error: ${createResult.error}`);
-    }
+    const createResponse = await fetch(
+      "http://54.162.88.144:2358/submissions?base64_encoded=false&wait=true",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          source_code: fullCode,
+          language_id: languageId, // ✅ แก้ไข: ใช้ language_id
+          stdin: "",
+        }),
+      }
+    );
+
+    // ✅ แก้ไข: ใช้ createResponse.json()
+    const result = await createResponse.json();
     
-    if (!createResult.id) {
-      throw new Error(`Paiza API Error: No submission ID returned`);
-    }
-    
-    const submissionId = createResult.id;
-    console.log("Function Test Submission ID:", submissionId);
-
-    // รอผลลัพธ์
-    let result;
-    let attempts = 0;
-    const maxAttempts = 30;
-
-    while (attempts < maxAttempts) {
-      await sleep(1000);
-      
-      const statusUrl = `https://api.paiza.io/runners/get_details?id=${submissionId}&api_key=${
-        process.env.PAIZA_API_KEY || "guest"
-      }`;
-      const detailsResponse = await fetch(statusUrl);
-      result = await detailsResponse.json();
-
-      console.log(`Function Test Attempt ${attempts + 1}: Status = ${result.status}`);
-
-      if (result.status === "completed") break;
-      attempts++;
-    }
-
-    if (attempts >= maxAttempts) {
-      return NextResponse.json({
-        isCorrect: false,
-        message: "โค้ดใช้เวลารันนานเกินไป",
-        details: "Timeout after 30 seconds",
-        timestamp: new Date().toISOString(),
-      });
-    }
-
-    console.log("=== Execution Result ===");
+    console.log("=== Judge0 Result ===");
+    console.log("Status:", result.status);
     console.log("stdout:", result.stdout);
     console.log("stderr:", result.stderr);
-    console.log("build_stderr:", result.build_stderr);
+    console.log("compile_output:", result.compile_output);
 
     // ========================================
-    // ตรวจสอบผลลัพธ์
+    // ตรวจสอบ Error จาก Judge0
     // ========================================
-    if (result.build_result === "failure") {
+    
+    // Compilation Error (status.id = 6)
+    if (result.status?.id === 6) {
       return NextResponse.json({
         isCorrect: false,
         message: "โค้ดมีข้อผิดพลาด Syntax",
-        details: result.build_stderr || result.stderr || "Compilation failed",
+        details: result.compile_output || "Compilation failed",
         actualOutput: result.stdout || "",
         timestamp: new Date().toISOString(),
       });
     }
 
+    // Runtime Error (status.id = 7-12)
+    if (result.status?.id >= 7 && result.status?.id <= 12) {
+      return NextResponse.json({
+        isCorrect: false,
+        message: "เกิด Runtime Error",
+        details: result.stderr || result.status.description,
+        actualOutput: result.stdout || "",
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    // Time Limit Exceeded (status.id = 5)
+    if (result.status?.id === 5) {
+      return NextResponse.json({
+        isCorrect: false,
+        message: "โค้ดใช้เวลารันนานเกินไป",
+        details: "Time Limit Exceeded",
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    // Internal Error (status.id = 13)
+    if (result.status?.id === 13) {
+      return NextResponse.json({
+        isCorrect: false,
+        message: "เกิดข้อผิดพลาดภายในระบบ",
+        details: result.status.description,
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    // ========================================
+    // Parse ผลลัพธ์ (ต้องเป็น JSON array)
+    // ========================================
     const output = (result.stdout || "").trim();
-    
-    // พยายาม parse JSON ถ้าเป็นผลลัพธ์จาก test script
     let testResults = [];
     let allPassed = false;
     let passedCount = 0;
     
     try {
-      // ลอง parse JSON
       testResults = JSON.parse(output);
       allPassed = testResults.every(t => t.passed === true);
       passedCount = testResults.filter(t => t.passed === true).length;
     } catch (e) {
-      // ถ้า parse ไม่ได้ แสดงว่าอาจมีปัญหา
       console.error("Failed to parse test results as JSON:", e);
       return NextResponse.json({
         isCorrect: false,
@@ -324,6 +296,9 @@ ${testScript}`;
       });
     }
 
+    // ========================================
+    // ส่งผลลัพธ์กลับ
+    // ========================================
     return NextResponse.json({
       isCorrect: allPassed,
       message: allPassed 
@@ -332,6 +307,7 @@ ${testScript}`;
       testResults: testResults,
       actualOutput: output,
       executionTime: result.time || "N/A",
+      memory: result.memory || "N/A",
       challengeId: challengeData.id,
       timestamp: new Date().toISOString(),
     });
@@ -472,84 +448,82 @@ export async function POST(request) {
     }
 
     // ========================================
-    // BRANCH 3: รันโค้ดผ่าน Paiza.IO ก่อนเสมอ
-    // (ป้องกันการ bypass ด้วย console.log)
+    // BRANCH 3: รันโค้ดผ่าน Judge0
     // ========================================
     const expectedOutputRaw = challengeData.expected_output || "";
+    const expectedOutputTrimmed = expectedOutputRaw.trim().replace(/\r\n/g, "\n");
+    
     console.log("Expected Output (Raw):", expectedOutputRaw);
 
-    const paizaLanguage = LANGUAGE_MAP[language];
-    console.log("Sending to Paiza - Language:", paizaLanguage);
+    const languageId = LANGUAGE_MAP[language];
+    console.log(`Sending to Judge0 - Language ID: ${languageId}`);
 
-    const requestBody = {
-      source_code: answer,
-      language: paizaLanguage,
-      input: "",
-      api_key: process.env.PAIZA_API_KEY || "guest",
-    };
-
-    // ส่งไปรันที่ Paiza.IO
-    const createResponse = await fetch("https://api.paiza.io/runners/create", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(requestBody),
-    });
-
-    const createResult = await createResponse.json();
-    console.log("Create Result:", createResult);
-
-    if (createResult.error) {
-      throw new Error(`Paiza API Error: ${createResult.error}`);
-    }
-
-    if (!createResult.id) {
-      throw new Error(`Paiza API Error: No submission ID returned`);
-    }
-
-    const submissionId = createResult.id;
-    console.log("Submission ID:", submissionId);
-
-    // รอผลลัพธ์
-    let result;
-    let attempts = 0;
-    const maxAttempts = 30;
-
-    while (attempts < maxAttempts) {
-      await sleep(1000);
-
-      const statusUrl = `https://api.paiza.io/runners/get_details?id=${submissionId}&api_key=${
-        process.env.PAIZA_API_KEY || "guest"
-      }`;
-      const detailsResponse = await fetch(statusUrl);
-      result = await detailsResponse.json();
-
-      console.log(`Attempt ${attempts + 1}: Status = ${result.status}`);
-
-      if (result.status === "completed") {
-        break;
+    // ส่งไปรันที่ Judge0 (ใช้ wait=true ไม่ต้อง polling)
+    const response = await fetch(
+      "http://54.162.88.144:2358/submissions?base64_encoded=false&wait=true",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          source_code: answer,
+          language_id: languageId,
+          stdin: "",
+          expected_output: expectedOutputTrimmed, // ให้ Judge0 เปรียบเทียบให้
+        }),
       }
+    );
 
-      attempts++;
-    }
+    const result = await response.json();
+    
+    console.log("=== Judge0 Result ===");
+    console.log("Status:", result.status);
+    console.log("stdout:", result.stdout);
+    console.log("stderr:", result.stderr);
+    console.log("compile_output:", result.compile_output);
 
-    if (attempts >= maxAttempts) {
+    // ========================================
+    // ตรวจสอบ Error จาก Judge0
+    // ========================================
+    
+    // Compilation Error (status.id = 6)
+    if (result.status?.id === 6) {
       return NextResponse.json({
         isCorrect: false,
-        message: "โค้ดใช้เวลารันนานเกินไป",
-        details: "Timeout after 30 seconds",
+        message: "เกิดข้อผิดพลาดในการ Compile",
+        details: result.compile_output || "Compilation failed",
+        actualOutput: "",
         timestamp: new Date().toISOString(),
       });
     }
 
-    console.log("Final Result:", result);
-
-    // ตรวจสอบ Compilation Error
-    if (result.build_result === "failure") {
+    // Runtime Error (status.id = 7-12)
+    if (result.status?.id >= 7 && result.status?.id <= 12) {
       return NextResponse.json({
         isCorrect: false,
-        message: "เกิดข้อผิดพลาดในการ Compile",
-        details: result.build_stderr || "Compilation failed",
-        actualOutput: "",
+        message: "เกิด Runtime Error",
+        details: result.stderr || result.status.description,
+        actualOutput: result.stdout || "",
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    // Time Limit Exceeded (status.id = 5)
+    if (result.status?.id === 5) {
+      return NextResponse.json({
+        isCorrect: false,
+        message: "โค้ดใช้เวลารันนานเกินไป",
+        details: "Time Limit Exceeded",
+        actualOutput: result.stdout || "",
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    // Internal Error (status.id = 13)
+    if (result.status?.id === 13) {
+      return NextResponse.json({
+        isCorrect: false,
+        message: "เกิดข้อผิดพลาดภายในระบบ",
+        details: result.status.description,
         timestamp: new Date().toISOString(),
       });
     }
@@ -588,13 +562,13 @@ export async function POST(request) {
     // BRANCH 5: เปรียบเทียบผลลัพธ์
     // ========================================
     const actualOutput = (result.stdout || "").trim().replace(/\r\n/g, "\n");
-    const expectedOutputTrimmed = (expectedOutputRaw || "")
-      .trim()
-      .replace(/\r\n/g, "\n");
-    const isCorrect = actualOutput === expectedOutputTrimmed;
+    
+    // Judge0 status.id = 3 (Accepted) หมายถึงผลลัพธ์ตรงกับ expected_output
+    const isCorrect = result.status?.id === 3;
 
     console.log("Expected (Trimmed):", expectedOutputTrimmed);
     console.log("Actual (Trimmed):", actualOutput);
+    console.log("Judge0 Status ID:", result.status?.id);
     console.log("Is Correct:", isCorrect);
 
     // บันทึกคำตอบ
@@ -615,11 +589,11 @@ export async function POST(request) {
 
     return NextResponse.json({
       isCorrect: isCorrect,
-      
       actualOutput: actualOutput,
       expectedOutput: isCorrect ? null : expectedOutputTrimmed,
       challengeId: challengeId,
       executionTime: result.time || "N/A",
+      memory: result.memory || "N/A",
       timestamp: new Date().toISOString(),
     });
   } catch (error) {
